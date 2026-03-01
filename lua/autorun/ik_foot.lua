@@ -1,9 +1,11 @@
 if CLIENT then
+	-- per player sync stuff
+	
 	local COLOR_WHITE = Color(255, 255, 255, 255)
 	local COLOR_RED = Color(255, 0, 0, 255)
 	local COLOR_GREEN = Color(0, 255, 0, 255)
 
-	-- configuration variables
+	-- client cvars
 	local cvIkFoot = CreateClientConVar("ik_foot", 1, true, true, "enable/disable IK foot system")
 	local cvIkFootLean = CreateClientConVar("ik_foot_lean", 0, true, true, "enable/disable body leaning")
 	local cvGroundDistance = CreateClientConVar("ik_foot_ground_distance", 45, true, true, "ground detection range")
@@ -13,21 +15,36 @@ if CLIENT then
 	local cvTraceStartOffset = CreateClientConVar("ik_foot_trace_start_offset", 30, true, true, "trace starting height offset")
 	local cvSoleOffset = CreateClientConVar("ik_foot_sole_offset", 1.75, true, true, "sole contact point offset")
 	local cvUnevenDropScale = CreateClientConVar("ik_foot_uneven_drop_scale", 0.35, true, true, "body drop scaling on uneven terrain")
-	local cvExtraBodyDrop = CreateClientConVar("ik_foot_extra_body_drop", 1.0, true, true, "base body drop amount")
-	local cvExtraBodyDropUneven = CreateClientConVar("ik_foot_extra_body_drop_uneven", 4.0, true, true, "additional body drop on slopes")
+	local cvExtraBodyDrop = CreateClientConVar("ik_foot_extra_body_drop", 0.3, true, true, "base body drop amount")
+	local cvExtraBodyDropUneven = CreateClientConVar("ik_foot_extra_body_drop_uneven", 1.2, true, true, "additional body drop on slopes")
 	local cvHighFootBendBoost = CreateClientConVar("ik_foot_high_foot_bend_boost", 1.45, true, true, "knee bend multiplier")
 	local cvFootRotationScale = CreateClientConVar("ik_foot_rotation_scale", 0.15, true, true, "foot rotation intensity")
 	local cvStabilizeIdle = CreateClientConVar("ik_foot_stabilize_idle", 1, true, true, "stabilize when idle")
 	local cvIdleVelocityThreshold = CreateClientConVar("ik_foot_idle_velocity", 5, true, true, "idle detection threshold")
 	local cvIdleDistanceThreshold = CreateClientConVar("ik_foot_idle_threshold", 0.5, true, true, "idle position tolerance")
 
-	-- pac3 compatibility check
+	local function GetIKParam(ply, paramName, conVar)
+		if ply == LocalPlayer() then
+			return conVar:GetFloat()
+		else
+			local nwValue = ply:GetNWFloat("IK_" .. paramName, 0)
+			return nwValue
+		end
+	end
+	
+	local function GetIKParamBool(ply, paramName, conVar)
+		if ply == LocalPlayer() then
+			return conVar:GetBool()
+		else
+			return ply:GetNWBool("IK_" .. paramName, false)
+		end
+	end
+
 	local function UsePACBoneAPI()
 		return istable(pac) and pac.IsEnabled and pac.IsEnabled() and 
 		       isfunction(pac.ManipulateBonePosition) and isfunction(pac.ManipulateBoneAngles)
 	end
 
-	-- bone position manipulation
 	local function SetBonePosition(ply, bone, pos)
 		if bone == nil then return end
 		if UsePACBoneAPI() then
@@ -37,7 +54,6 @@ if CLIENT then
 		end
 	end
 
-	-- bone angle manipulation
 	local function SetBoneAngles(ply, bone, ang)
 		if bone == nil then return end
 		if UsePACBoneAPI() then
@@ -47,7 +63,6 @@ if CLIENT then
 		end
 	end
 
-	-- retrieve bone indices from model
 	local function GetIKBones(ply)
 		local model = ply:GetModel()
 		local bones = ply.IKBones
@@ -70,7 +85,6 @@ if CLIENT then
 		return bones
 	end
 
-	-- check if manipulation is allowed
 	local function CanManipulateBones(ply)
 		if ply:InVehicle() then return false end
 		if istable(ActionGmod) and ply:IsDive() then return false end
@@ -79,6 +93,8 @@ if CLIENT then
 	end
 
 	local function TraceGroundSample(ply, startPos, groundDist)
+		local soleOffset = GetIKParam(ply, "sole_offset", cvSoleOffset)
+		
 		local trace = util.TraceHull({
 			start = startPos,
 			endpos = startPos - Vector(0, 0, groundDist),
@@ -89,7 +105,7 @@ if CLIENT then
 
 		if trace.Hit then
 			local normal = trace.HitNormal or vector_up
-			local contactPos = trace.HitPos + normal * cvSoleOffset:GetFloat()
+			local contactPos = trace.HitPos + normal * soleOffset
 			local distance = math.Clamp(startPos.z - contactPos.z, 0, groundDist)
 			return {
 				hit = true,
@@ -145,11 +161,31 @@ if CLIENT then
 		return samples
 	end
 
-	-- compute ik positions and angles
+	-- main ik calc
 	local function CalculateIK(ply, lFootPos, rFootPos, lFootAng, rFootAng)
-		local groundDist = cvGroundDistance:GetFloat()
-		local legLength = cvLegLength:GetFloat()
-		local traceStartZ = ply:GetPos().z + cvTraceStartOffset:GetFloat()
+		local groundDist = GetIKParam(ply, "ground_distance", cvGroundDistance)
+		local legLength = GetIKParam(ply, "leg_length", cvLegLength)
+		local traceStartOffset = GetIKParam(ply, "trace_start_offset", cvTraceStartOffset)
+		local soleOffset = GetIKParam(ply, "sole_offset", cvSoleOffset)
+		local unevenDropScale = GetIKParam(ply, "uneven_drop_scale", cvUnevenDropScale)
+		local extraBodyDrop = GetIKParam(ply, "extra_body_drop", cvExtraBodyDrop)
+		local extraBodyDropUneven = GetIKParam(ply, "extra_body_drop_uneven", cvExtraBodyDropUneven)
+		local highFootBendBoost = GetIKParam(ply, "high_foot_bend_boost", cvHighFootBendBoost)
+		local footRotationScale = GetIKParam(ply, "foot_rotation_scale", cvFootRotationScale)
+		local ikFootLean = GetIKParamBool(ply, "lean_enabled", cvIkFootLean)
+		
+		local traceStartZ = ply:GetPos().z + traceStartOffset
+		
+		-- init foot lock state
+		if not ply.IKFootState then
+			ply.IKFootState = {
+				left = { planted = false, lockPos = nil },
+				right = { planted = false, lockPos = nil },
+			}
+		end
+		if not ply.IKFootLastPos then
+			ply.IKFootLastPos = { left = Vector(0, 0, 0), right = Vector(0, 0, 0) }
+		end
 
 		local lSamples = SampleFootGround(ply, lFootPos, lFootAng, traceStartZ, groundDist)
 		local rSamples = SampleFootGround(ply, rFootPos, rFootAng, traceStartZ, groundDist)
@@ -157,28 +193,148 @@ if CLIENT then
 		local lDist = lSamples.center.distance
 		local rDist = rSamples.center.distance
 
-		-- reduce jitter when standing still
-		if cvStabilizeIdle:GetBool() then
-			local velocity2D = ply:GetVelocity():Length2D()
-			local isIdle = velocity2D < cvIdleVelocityThreshold:GetFloat()
-			
-			if isIdle and ply.IKLastDist then
-				local threshold = cvIdleDistanceThreshold:GetFloat()
-				local lChange = math.abs(lDist - ply.IKLastDist.l)
-				local rChange = math.abs(rDist - ply.IKLastDist.r)
-				
-				-- maintain previous values within threshold
-				if lChange < threshold then
-					lDist = ply.IKLastDist.l
-				end
-				if rChange < threshold then
-					rDist = ply.IKLastDist.r
-				end
-			end
-			
-			-- cache for next iteration
-			ply.IKLastDist = {l = lDist, r = rDist}
+		local midFootPos = (lFootPos + rFootPos) * 0.5
+		local midSamples = SampleFootGround(ply, midFootPos, lFootAng, traceStartZ, groundDist)
+		local midDist = midSamples.center.distance
+
+		local velocity2D = ply:GetVelocity():Length2D()
+		local vertVel = ply:GetVelocity().z
+
+		local preRawMaxDist = math.max(lDist, rDist)
+		local preRawMinDist = math.min(lDist, rDist)
+		local preHeightDiff = preRawMaxDist - preRawMinDist
+		local preMidToMinDiff = midDist - preRawMinDist
+		local preMinToMaxDiff = preRawMaxDist - preRawMinDist
+		local preStairsDetected = preHeightDiff > 10 and preMidToMinDiff < (preMinToMaxDiff * 0.4)
+		local preHigherFoot = lDist > rDist and "left" or "right"
+		
+		local rawLFootPos = lFootPos
+		local rawRFootPos = rFootPos
+
+		if not ply.IKFootBoneLastPos then
+			ply.IKFootBoneLastPos = { left = rawLFootPos, right = rawRFootPos }
 		end
+
+		local swingHorizontalThreshold = 4
+		local swingVerticalThreshold = 3
+		local minVelocityToConsiderSwing = 2
+
+		local function isSwingStart(lastRaw, raw)
+			local delta = raw - lastRaw
+			local horiz = Vector(delta.x, delta.y, 0):Length()
+			local vert = math.abs(delta.z)
+			return (horiz > swingHorizontalThreshold or vert > swingVerticalThreshold)
+		end
+
+		if ply.IKFootState.left.planted and ply.IKFootState.left.lockPos then
+			if isSwingStart(ply.IKFootBoneLastPos.left, rawLFootPos) and velocity2D > minVelocityToConsiderSwing then
+				ply.IKFootState.left.planted = false
+				ply.IKFootState.left.lockPos = nil
+			end
+		end
+
+		if ply.IKFootState.right.planted and ply.IKFootState.right.lockPos then
+			if isSwingStart(ply.IKFootBoneLastPos.right, rawRFootPos) and velocity2D > minVelocityToConsiderSwing then
+				ply.IKFootState.right.planted = false
+				ply.IKFootState.right.lockPos = nil
+			end
+		end
+
+		-- landing detect
+		local footContactThreshold = 4
+		local velocityThreshold = 50
+		local vertVelThreshold = 30
+		local plantReleaseDistance = 10
+
+		local lStance = ply:OnGround() and lDist < footContactThreshold and velocity2D < velocityThreshold and math.abs(vertVel) < vertVelThreshold
+		if lStance and not ply.IKFootState.left.planted then
+			ply.IKFootState.left.planted = true
+			if preStairsDetected and preHigherFoot == "left" and midSamples and midSamples.center then
+				ply.IKFootState.left.lockPos = Vector(midSamples.center.hitPos.x, midSamples.center.hitPos.y, midSamples.center.hitPos.z)
+			else
+				ply.IKFootState.left.lockPos = lSamples.center.hitPos
+			end
+		end
+
+		local rStance = ply:OnGround() and rDist < footContactThreshold and velocity2D < velocityThreshold and math.abs(vertVel) < vertVelThreshold
+		if rStance and not ply.IKFootState.right.planted then
+			ply.IKFootState.right.planted = true
+			if preStairsDetected and preHigherFoot == "right" and midSamples and midSamples.center then
+				ply.IKFootState.right.lockPos = Vector(midSamples.center.hitPos.x, midSamples.center.hitPos.y, midSamples.center.hitPos.z)
+			else
+				ply.IKFootState.right.lockPos = rSamples.center.hitPos
+			end
+		end
+
+		if ply.IKFootState.left.planted and ply.IKFootState.left.lockPos then
+			local distFromLock = rawLFootPos:Distance(ply.IKFootState.left.lockPos)
+			local shouldRelease = (lDist > footContactThreshold + 3) and (distFromLock > plantReleaseDistance * 1.2) and (velocity2D > velocityThreshold * 1.5)
+			if shouldRelease then
+				ply.IKFootState.left.planted = false
+				ply.IKFootState.left.lockPos = nil
+			end
+		end
+
+		if ply.IKFootState.right.planted and ply.IKFootState.right.lockPos then
+			local distFromLock = rawRFootPos:Distance(ply.IKFootState.right.lockPos)
+			local shouldRelease = (rDist > footContactThreshold + 3) and (distFromLock > plantReleaseDistance * 1.2) and (velocity2D > velocityThreshold * 1.5)
+			if shouldRelease then
+				ply.IKFootState.right.planted = false
+				ply.IKFootState.right.lockPos = nil
+			end
+		end
+
+		-- lock or clamp in 3d
+		local maxHorizontalMovePerFrame = 2.5
+		local maxVerticalMovePerFrame = 3
+
+		if ply.IKFootState.left.planted and ply.IKFootState.left.lockPos then
+			lFootPos = ply.IKFootState.left.lockPos
+		else
+			local lMoveDelta = rawLFootPos - (ply.IKFootLastPos and ply.IKFootLastPos.left or rawLFootPos)
+			local lHorizontalDelta = Vector(lMoveDelta.x, lMoveDelta.y, 0)
+			local lVerticalDelta = lMoveDelta.z
+			local lHorizontalLen = lHorizontalDelta:Length()
+
+			if lHorizontalLen > maxHorizontalMovePerFrame then
+				lHorizontalDelta = lHorizontalDelta:GetNormalized() * maxHorizontalMovePerFrame
+			end
+			if math.abs(lVerticalDelta) > maxVerticalMovePerFrame then
+				lVerticalDelta = math.Clamp(lVerticalDelta, -maxVerticalMovePerFrame, maxVerticalMovePerFrame)
+			end
+
+			lFootPos = (ply.IKFootLastPos and ply.IKFootLastPos.left or rawLFootPos) + lHorizontalDelta + Vector(0,0,lVerticalDelta)
+		end
+
+		if ply.IKFootState.right.planted and ply.IKFootState.right.lockPos then
+			rFootPos = ply.IKFootState.right.lockPos
+		else
+			local rMoveDelta = rawRFootPos - (ply.IKFootLastPos and ply.IKFootLastPos.right or rawRFootPos)
+			local rHorizontalDelta = Vector(rMoveDelta.x, rMoveDelta.y, 0)
+			local rVerticalDelta = rMoveDelta.z
+			local rHorizontalLen = rHorizontalDelta:Length()
+
+			if rHorizontalLen > maxHorizontalMovePerFrame then
+				rHorizontalDelta = rHorizontalDelta:GetNormalized() * maxHorizontalMovePerFrame
+			end
+			if math.abs(rVerticalDelta) > maxVerticalMovePerFrame then
+				rVerticalDelta = math.Clamp(rVerticalDelta, -maxVerticalMovePerFrame, maxVerticalMovePerFrame)
+			end
+
+			rFootPos = (ply.IKFootLastPos and ply.IKFootLastPos.right or rawRFootPos) + rHorizontalDelta + Vector(0,0,rVerticalDelta)
+		end
+
+		ply.IKFootLastPos = ply.IKFootLastPos or {}
+		ply.IKFootLastPos.left = lFootPos
+		ply.IKFootLastPos.right = rFootPos
+
+		ply.IKFootBoneLastPos.left = rawLFootPos
+		ply.IKFootBoneLastPos.right = rawRFootPos
+		
+		lSamples = SampleFootGround(ply, lFootPos, lFootAng, traceStartZ, groundDist)
+		rSamples = SampleFootGround(ply, rFootPos, rFootAng, traceStartZ, groundDist)
+		lDist = lSamples.center.distance
+		rDist = rSamples.center.distance
 
 		local result = {
 			basePos = Vector(0, 0, 0),
@@ -191,32 +347,65 @@ if CLIENT then
 			rFoot = Angle(0, 0, 0),
 			lDist = lDist,
 			rDist = rDist,
+			midDist = midDist,
 			bodyDrop = 0,
 			lSamples = lSamples,
 			rSamples = rSamples,
+			midSamples = midSamples,
 		}
 
 		if ply:OnGround() then
-			-- adjust body position based on terrain
-			local avgDist = (lDist + rDist) * 0.5
-			local heightDiff = math.abs(lDist - rDist)
+			-- body drop from ground
+			local rawMaxDist = math.max(lDist, rDist)
+			local rawMinDist = math.min(lDist, rDist)
+			local rawHeightDiff = rawMaxDist - rawMinDist
 			
-			-- dynamic body drop calculation
+			local stairThreshold = 10
+			local midToMinDiff = midDist - rawMinDist
+			local minToMaxDiff = rawMaxDist - rawMinDist
+			local stairsDetected = rawHeightDiff > stairThreshold and midToMinDiff < (minToMaxDiff * 0.4)
+
+			local effLDist = lDist
+			local effRDist = rDist
+			if stairsDetected then
+				if lDist > rDist then
+					effLDist = midDist
+				else
+					effRDist = midDist
+				end
+			end
+
+			local maxDist = math.max(effLDist, effRDist)
+			local minDist = math.min(effLDist, effRDist)
+			local avgDist = (effLDist + effRDist) * 0.5
+			local heightDiff = maxDist - minDist
+			
 			local unevenFactor = math.Clamp(heightDiff / 8, 0, 1)
-			local extraDrop = Lerp(unevenFactor, cvExtraBodyDrop:GetFloat(), cvExtraBodyDropUneven:GetFloat())
 			
-			local bodyDrop = math.max(avgDist - cvTraceStartOffset:GetFloat(), 0)
-			bodyDrop = bodyDrop + (heightDiff * cvUnevenDropScale:GetFloat()) + extraDrop
-			bodyDrop = math.Clamp(bodyDrop, 0, groundDist)
+			local stairsReduction = stairsDetected and 0.1 or (heightDiff > 15 and 0.2 or 1.0)
+			local extraDrop = Lerp(unevenFactor, extraBodyDrop, extraBodyDropUneven) * stairsReduction
+			
+			local baseDrop = stairsDetected and midDist or maxDist
+			local bodyDrop = math.max(baseDrop - traceStartOffset, 0)
+			bodyDrop = bodyDrop + (heightDiff * unevenDropScale * (stairsDetected and 0.1 or 0.25)) + extraDrop
+			bodyDrop = math.Clamp(bodyDrop, 0, groundDist * 0.4)
+			
+			if not ply.IKLastBodyDrop then
+				ply.IKLastBodyDrop = bodyDrop
+			else
+				local maxDeltaPerFrame = 4
+				bodyDrop = math.Clamp(bodyDrop, ply.IKLastBodyDrop - maxDeltaPerFrame, ply.IKLastBodyDrop + maxDeltaPerFrame)
+			end
+			ply.IKLastBodyDrop = bodyDrop
 
 			result.bodyDrop = bodyDrop
 			result.basePos = Vector(0, 0, -bodyDrop)
 
-			-- calculate knee bend angles
+			-- knee bend
 			local kneeRange = math.max(legLength * 0.33, 10)
-			local bendBoost = cvHighFootBendBoost:GetFloat()
-			local lDelta = avgDist - lDist
-			local rDelta = avgDist - rDist
+			local bendBoost = highFootBendBoost
+			local lDelta = avgDist - effLDist
+			local rDelta = avgDist - effRDist
 
 			local lAlpha = math.deg(math.asin(math.Clamp(lDelta / kneeRange, -1, 1)))
 			local rAlpha = math.deg(math.asin(math.Clamp(rDelta / kneeRange, -1, 1)))
@@ -232,8 +421,8 @@ if CLIENT then
 			result.rCalf = Angle(0, rAlpha, 0)
 			result.rThigh = Angle(0, -rAlpha, 0)
 
-			-- calculate foot rotation from ground geometry
-			local rotScale = cvFootRotationScale:GetFloat()
+			-- foot rot from ground
+			local rotScale = footRotationScale
 			
 			if rotScale > 0.01 then
 				local lToeHeelLen = math.max(lSamples.toe.hitPos:Distance(lSamples.heel.hitPos), 0.01)
@@ -246,13 +435,11 @@ if CLIENT then
 				local lRoll = math.deg(math.atan2(lSamples.right.hitPos.z - lSamples.left.hitPos.z, lLeftRightLen))
 				local rRoll = math.deg(math.atan2(rSamples.right.hitPos.z - rSamples.left.hitPos.z, rLeftRightLen))
 
-				-- apply rotation dampening
 				lPitch = lPitch * rotScale
 				rPitch = rPitch * rotScale
 				lRoll = lRoll * rotScale
 				rRoll = rRoll * rotScale
 
-				-- limit rotation angles
 				lPitch = math.Clamp(lPitch, -25, 25)
 				rPitch = math.Clamp(rPitch, -25, 25)
 				lRoll = math.Clamp(lRoll, -20, 20)
@@ -261,13 +448,11 @@ if CLIENT then
 				result.lFoot = Angle(0, lPitch, lRoll)
 				result.rFoot = Angle(0, rPitch, rRoll)
 			else
-				-- keep feet flat
 				result.lFoot = Angle(0, 0, 0)
 				result.rFoot = Angle(0, 0, 0)
 			end
 
-			-- apply body lean
-			if cvIkFootLean:GetBool() then
+			if ikFootLean then
 				local plyVel = ply:GetVelocity()
 				local plyAng = ply:GetAimVector():Angle()
 				local leanY = math.Clamp(plyVel:Dot(plyAng:Right()) / 20, -4, 4)
@@ -278,16 +463,18 @@ if CLIENT then
 		return result
 	end
 
-	-- render debug information
+	-- debug draw
 	local function DrawDebug(ply, ikResult, maxDrop)
 		local debugLevel = cvDebug:GetInt()
 		if debugLevel <= 0 or not CanManipulateBones(ply) then return end
 
 		local mins = Vector(-3, -3, 0)
 		local maxs = Vector(3, 3, 5)
+		local COLOR_BLUE = Color(0, 100, 255, 255)
 
 		local lCenter = ikResult.lSamples and ikResult.lSamples.center
 		local rCenter = ikResult.rSamples and ikResult.rSamples.center
+		local midCenter = ikResult.midSamples and ikResult.midSamples.center
 		if not lCenter or not rCenter then return end
 
 		render.DrawWireframeBox(lCenter.hitPos, Angle(), mins, maxs, COLOR_RED, true)
@@ -298,7 +485,12 @@ if CLIENT then
 		render.DrawLine(rCenter.startPos, rCenter.hitPos, COLOR_RED)
 		render.DrawLine(rCenter.hitPos, rCenter.hitPos + rCenter.normal * 6, COLOR_GREEN)
 
-		-- render additional debug info
+		if midCenter then
+			render.DrawWireframeBox(midCenter.hitPos, Angle(), mins, maxs, COLOR_BLUE, true)
+			render.DrawLine(midCenter.startPos, midCenter.hitPos, COLOR_BLUE)
+			render.DrawLine(midCenter.hitPos, midCenter.hitPos + midCenter.normal * 6, COLOR_GREEN)
+		end
+
 		if debugLevel > 1 then
 			local bottom, top = ply:GetHull()
 			if ply:Crouching() then
@@ -306,21 +498,22 @@ if CLIENT then
 			end
 			render.DrawWireframeBox(ply:GetPos(), Angle(), bottom, top, COLOR_WHITE, true)
 
-			-- display debug values
 			local textPos = ply:GetPos() + Vector(0, 0, 86)
 			debugoverlay.Text(
 				textPos,
-				string.format("L_DIST: %.1f  R_DIST: %.1f  DROP: %.1f", ikResult.lDist, ikResult.rDist, maxDrop),
+				string.format("L_DIST: %.1f  R_DIST: %.1f  MID_DIST: %.1f  DROP: %.1f", ikResult.lDist, ikResult.rDist, ikResult.midDist or 0, maxDrop),
 				FrameTime() * 2,
 				false
 			)
 		end
 	end
 
-	-- main update hook
+	-- main draw hook
 	hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 		if not IsValid(ply) then return end
-		if not cvIkFoot:GetBool() then return end
+		
+		local ikEnabled = GetIKParamBool(ply, "enabled", cvIkFoot)
+		if not ikEnabled then return end
 		if not CanManipulateBones(ply) then return end
 
 		local bones = GetIKBones(ply)
@@ -328,16 +521,13 @@ if CLIENT then
 			return
 		end
 
-		-- retrieve current bone transforms
 		local lFootPos, lFootAng = ply:GetBonePosition(bones.lFoot)
 		local rFootPos, rFootAng = ply:GetBonePosition(bones.rFoot)
 
 		if not (lFootPos and rFootPos and lFootAng and rFootAng) then return end
 
-		-- compute ik result
 		local ikResult = CalculateIK(ply, lFootPos, rFootPos, lFootAng, rFootAng)
 
-		-- initialize state tracking
 		if not ply.IKResult then
 			ply.IKResult = {
 				basePos = Vector(0, 0, 0),
@@ -351,17 +541,7 @@ if CLIENT then
 			}
 		end
 
-		-- smooth transitions
-		local smoothingFactor = cvSmoothing:GetFloat()
-		
-		-- enhance smoothing when idle
-		if cvStabilizeIdle:GetBool() then
-			local velocity2D = ply:GetVelocity():Length2D()
-			if velocity2D < cvIdleVelocityThreshold:GetFloat() then
-				smoothingFactor = smoothingFactor * 0.2
-			end
-		end
-		
+		local smoothingFactor = GetIKParam(ply, "smoothing", cvSmoothing)
 		local lerpTime = math.Clamp(FrameTime() * smoothingFactor, 0, 1)
 
 		ply.IKResult.basePos = LerpVector(lerpTime, ply.IKResult.basePos, ikResult.basePos)
@@ -373,7 +553,6 @@ if CLIENT then
 		ply.IKResult.lFoot = LerpAngle(lerpTime, ply.IKResult.lFoot, ikResult.lFoot)
 		ply.IKResult.rFoot = LerpAngle(lerpTime, ply.IKResult.rFoot, ikResult.rFoot)
 
-		-- apply transformations
 		SetBonePosition(ply, 0, ply.IKResult.basePos)
 		SetBoneAngles(ply, 0, ply.IKResult.baseAng)
 
@@ -384,16 +563,46 @@ if CLIENT then
 		SetBoneAngles(ply, bones.lFoot, ply.IKResult.lFoot)
 		SetBoneAngles(ply, bones.rFoot, ply.IKResult.rFoot)
 
-		-- render debug overlays
 		if cvDebug:GetInt() > 0 then
 			DrawDebug(ply, ikResult, ikResult.bodyDrop or 0)
 		end
 	end)
 
-	-- cleanup hook
+	-- send local config
+	local lastConfigSync = 0
+	hook.Add("Think", "IKFoot_SyncConfigToServer", function()
+		local now = UnPredictedCurTime()
+		if now - lastConfigSync < 0.5 then return end
+		lastConfigSync = now
+
+		local ply = LocalPlayer()
+		if not IsValid(ply) then return end
+
+		net.Start("IKFoot_ConfigUpdate")
+			net.WriteBool(cvIkFoot:GetBool())
+			net.WriteFloat(cvGroundDistance:GetFloat())
+			net.WriteFloat(cvLegLength:GetFloat())
+			net.WriteFloat(cvTraceStartOffset:GetFloat())
+			net.WriteFloat(cvSoleOffset:GetFloat())
+			net.WriteFloat(cvUnevenDropScale:GetFloat())
+			net.WriteFloat(cvExtraBodyDrop:GetFloat())
+			net.WriteFloat(cvExtraBodyDropUneven:GetFloat())
+			net.WriteFloat(cvHighFootBendBoost:GetFloat())
+			net.WriteFloat(cvFootRotationScale:GetFloat())
+			net.WriteBool(cvIkFootLean:GetBool())
+			net.WriteFloat(cvSmoothing:GetFloat())
+			net.WriteBool(cvStabilizeIdle:GetBool())
+			net.WriteFloat(cvIdleVelocityThreshold:GetFloat())
+			net.WriteFloat(cvIdleDistanceThreshold:GetFloat())
+		net.SendToServer()
+	end)
+
+	-- reset bones when off
 	hook.Add("PostPlayerDraw", "IKFoot_ResetBones", function(ply)
 		if not IsValid(ply) then return end
-		if cvIkFoot:GetBool() or not CanManipulateBones(ply) then return end
+		
+		local ikEnabled = GetIKParamBool(ply, "enabled", cvIkFoot)
+		if ikEnabled or not CanManipulateBones(ply) then return end
 
 		local bones = GetIKBones(ply)
 		if not (bones.lFoot and bones.rFoot) then return end

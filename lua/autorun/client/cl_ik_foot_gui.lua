@@ -1,6 +1,6 @@
 if SERVER then return end
 
--- gui and preset management
+-- gui preset stuff
 local PANEL = nil
 local PRESETS = {}
 local PRESET_FILE = "ik_foot_presets.txt"
@@ -14,7 +14,7 @@ local function NormalizeConVarName(name)
 	return name
 end
 
--- configuration variables with defaults and ranges
+-- cvar list
 local CONVARS = {
 	{name = "ik_foot", default = 1, min = 0, max = 1, decimals = 0, desc = "Enable/Disable IK Foot"},
 	{name = "ik_foot_debug", default = 0, min = 0, max = 2, decimals = 0, desc = "Debug Visualization Level"},
@@ -33,7 +33,7 @@ local CONVARS = {
 	{name = "ik_foot_idle_threshold", default = 0.5, min = 0, max = 5, decimals = 2, desc = "Idle Distance Threshold"},
 }
 
--- load saved presets
+-- load presets
 local function LoadPresets()
 	if not file.Exists(PRESET_FILE, "DATA") then
 		PRESETS = {}
@@ -49,7 +49,6 @@ local function LoadPresets()
 	local decoded = util.JSONToTable(json)
 	PRESETS = decoded or {}
 
-	-- Backward compatibility: migrate old player_ik_foot_* keys to ik_foot_*
 	local changed = false
 	for presetName, settings in pairs(PRESETS) do
 		if istable(settings) then
@@ -70,13 +69,11 @@ local function LoadPresets()
 	end
 end
 
--- save presets to file
 SavePresets = function()
 	local json = util.TableToJSON(PRESETS, true)
 	file.Write(PRESET_FILE, json)
 end
 
--- get current settings
 local function GetCurrentSettings()
 	local settings = {}
 	for _, cv in ipairs(CONVARS) do
@@ -88,7 +85,6 @@ local function GetCurrentSettings()
 	return settings
 end
 
--- apply settings from table
 local function ApplySettings(settings)
 	for name, value in pairs(settings) do
 		local cvarName = NormalizeConVarName(name)
@@ -98,7 +94,6 @@ local function ApplySettings(settings)
 	end
 end
 
--- reset to defaults
 local function ResetToDefaults()
 	for _, cv in ipairs(CONVARS) do
 		RunConsoleCommand(cv.name, tostring(cv.default))
@@ -106,7 +101,6 @@ local function ResetToDefaults()
 	chat.AddText(Color(100, 255, 100), "[IK Foot] ", Color(255, 255, 255), "Reset to default values")
 end
 
--- create preset from current settings
 local function CreatePreset(name)
 	if name == "" or not name then
 		chat.AddText(Color(255, 100, 100), "[IK Foot] ", Color(255, 255, 255), "Preset name cannot be empty!")
@@ -119,7 +113,6 @@ local function CreatePreset(name)
 	return true
 end
 
--- load preset by name
 local function LoadPreset(name)
 	if not PRESETS[name] then
 		chat.AddText(Color(255, 100, 100), "[IK Foot] ", Color(255, 255, 255), "Preset '", name, "' not found!")
@@ -131,7 +124,6 @@ local function LoadPreset(name)
 	return true
 end
 
--- delete preset
 local function DeletePreset(name)
 	if not PRESETS[name] then
 		chat.AddText(Color(255, 100, 100), "[IK Foot] ", Color(255, 255, 255), "Preset '", name, "' not found!")
@@ -144,7 +136,6 @@ local function DeletePreset(name)
 	return true
 end
 
--- refresh preset list in gui
 local function RefreshPresetList(listPanel)
 	if not IsValid(listPanel) then return end
 	
@@ -193,7 +184,7 @@ local function RefreshPresetList(listPanel)
 	end
 end
 
--- create main configuration interface
+-- build main gui
 local function CreateGUI()
 	if IsValid(PANEL) then
 		PANEL:Remove()
@@ -201,7 +192,6 @@ local function CreateGUI()
 	
 	LoadPresets()
 	
-	-- Main frame
 	local frame = vgui.Create("DFrame")
 	frame:SetSize(700, 650)
 	frame:Center()
@@ -212,7 +202,6 @@ local function CreateGUI()
 	frame:MakePopup()
 	PANEL = frame
 	
-	-- tab control
 	local tabs = vgui.Create("DPropertySheet", frame)
 	tabs:Dock(FILL)
 	
@@ -227,10 +216,8 @@ local function CreateGUI()
 	settingsScroll:Dock(FILL)
 	settingsScroll:DockMargin(5, 5, 5, 45)
 	
-	-- store sliders for refreshing
 	frame.Sliders = {}
 	
-	-- Create sliders for each ConVar
 	for _, cv in ipairs(CONVARS) do
 		local slider = vgui.Create("DNumSlider", settingsScroll)
 		slider:Dock(TOP)
@@ -249,7 +236,6 @@ local function CreateGUI()
 		table.insert(frame.Sliders, slider)
 	end
 	
-	-- bottom buttons
 	local btnPanel = vgui.Create("DPanel", settingsPanel)
 	btnPanel:Dock(BOTTOM)
 	btnPanel:SetHeight(35)
@@ -273,7 +259,6 @@ local function CreateGUI()
 		draw.RoundedBox(0, 0, 0, w, h, Color(40, 40, 50))
 	end
 	
-	-- new preset section
 	local newPresetPanel = vgui.Create("DPanel", presetsPanel)
 	newPresetPanel:Dock(TOP)
 	newPresetPanel:SetHeight(80)
@@ -306,7 +291,6 @@ local function CreateGUI()
 		end
 	end
 	
-	-- preset list
 	local listScroll = vgui.Create("DScrollPanel", presetsPanel)
 	listScroll:Dock(FILL)
 	listScroll:DockMargin(5, 5, 5, 5)
@@ -316,7 +300,6 @@ local function CreateGUI()
 	
 	tabs:AddSheet("Presets", presetsPanel, "icon16/disk.png")
 	
-	-- refresh sliders function
 	frame.RefreshSliders = function(self)
 		for _, slider in ipairs(self.Sliders) do
 			local cvar = slider.CVarName and GetConVar(slider.CVarName) or nil
@@ -329,12 +312,12 @@ local function CreateGUI()
 	return frame
 end
 
--- console command to open gui
+-- console cmd
 concommand.Add("ik_foot_menu", function()
 	CreateGUI()
 end)
 
--- chat command
+-- chat cmd
 hook.Add("OnPlayerChat", "IKFoot_ChatCommand", function(ply, text)
 	if ply ~= LocalPlayer() then return end
 	
@@ -345,7 +328,7 @@ hook.Add("OnPlayerChat", "IKFoot_ChatCommand", function(ply, text)
 	end
 end)
 
--- add to spawn menu
+-- spawnmenu entry
 hook.Add("PopulateToolMenu", "IKFoot_Menu", function()
 	spawnmenu.AddToolMenuOption("Utilities", "User", "IKFoot", "IK Foot Settings", "", "", function(panel)
 		panel:ClearControls()

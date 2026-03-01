@@ -1,14 +1,10 @@
 {
 	"title": "IK Foot System",
+	"version": "0.2",
 	"type": "effects",
-	"tags": [
+	"tags": 
+	[
 		"fun",
 		"roleplay"
-	],
-	"ignore": [
-		"*.git*",
-		"*.md",
-		"*.txt",
-		"LICENSE"
 	]
 }

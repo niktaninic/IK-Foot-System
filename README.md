@@ -1,6 +1,6 @@
 # IK Foot System
 
-**Version 0.1** - Early release, still subject to optimization and improvements.
+**Version 0.2** - Added multiplayer sync, stair stabilization, and foot locking.
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
@@ -9,11 +9,22 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Dynamic foot placement on uneven terrain
 - Smooth animation interpolation
 - Body position adjustment based on ground height
+- Midpoint stair sampling for stable climbing
+- Per-foot world-space planting and swing detection
 - Configurable foot rotation to match surface angles
 - Idle stabilization to prevent jittering
 - PAC3 compatibility
 - Debug visualization modes
 - Preset system for quick configuration switching
+
+## What's New in 0.2
+
+- Per-player IK config sync in multiplayer
+- Midpoint ground trace for stairs
+- Stair-aware body drop clamping
+- 3D foot lock with movement limits
+- Swing phase unlock and safer re-plant logic
+- Midpoint debug visualization and MID_DIST text
 
 ## Console Commands
 
@@ -31,8 +42,8 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - `ik_foot_trace_start_offset` - trace starting height offset (default: 30)
 - `ik_foot_sole_offset` - sole contact point offset (default: 1.75)
 - `ik_foot_uneven_drop_scale` - body drop scaling on uneven terrain (default: 0.35)
-- `ik_foot_extra_body_drop` - base body drop amount (default: 1.0)
-- `ik_foot_extra_body_drop_uneven` - additional body drop on slopes (default: 4.0)
+- `ik_foot_extra_body_drop` - base body drop amount (default: 0.3)
+- `ik_foot_extra_body_drop_uneven` - additional body drop on slopes (default: 1.2)
 - `ik_foot_high_foot_bend_boost` - knee bend multiplier (default: 1.45)
 - `ik_foot_rotation_scale` - foot rotation intensity (default: 0.15)
 - `ik_foot_stabilize_idle` - stabilize when idle (default: 1)
@@ -51,7 +62,7 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 
 ## Development Status
 
-This is version 0.1 - an early release of the addon. There are likely areas that could be optimized or improved. Feedback and suggestions are welcome!
+This is version 0.2. The addon is still being tuned and improved. Feedback and suggestions are welcome!
 
 ## Credits
 
