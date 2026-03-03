@@ -64,7 +64,3 @@ if SERVER then
 		ply:SetNWFloat("IK_idle_threshold", 0.5)
 	end)
 end
-
-if CLIENT then
-	include("ik_foot.lua")
-end

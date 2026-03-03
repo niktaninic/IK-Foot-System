@@ -570,6 +570,7 @@ if CLIENT then
 
 	-- send local config
 	local lastConfigSync = 0
+	local configUpdateMessageName = "IKFoot_ConfigUpdate"
 	hook.Add("Think", "IKFoot_SyncConfigToServer", function()
 		local now = UnPredictedCurTime()
 		if now - lastConfigSync < 0.5 then return end
@@ -577,8 +578,9 @@ if CLIENT then
 
 		local ply = LocalPlayer()
 		if not IsValid(ply) then return end
+		if util.NetworkStringToID(configUpdateMessageName) == 0 then return end
 
-		net.Start("IKFoot_ConfigUpdate")
+		net.Start(configUpdateMessageName)
 			net.WriteBool(cvIkFoot:GetBool())
 			net.WriteFloat(cvGroundDistance:GetFloat())
 			net.WriteFloat(cvLegLength:GetFloat())
