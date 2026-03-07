@@ -1,6 +1,6 @@
 # IK Foot System
 
-**Version 0.3** - Added multiplayer sync, stair stabilization, foot locking, and a minor bug fix.
+**Version 0.31** - TraceGroundSample now filters out all player entities, not just the current player.
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
@@ -17,15 +17,9 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Debug visualization modes
 - Preset system for quick configuration switching
 
-## What's New in 0.3
+## What's New in 0.31
 
-- Per-player IK config sync in multiplayer
-- Midpoint ground trace for stairs
-- Stair-aware body drop clamping
-- 3D foot lock with movement limits
-- Swing phase unlock and safer re-plant logic
-- Midpoint debug visualization and MID_DIST text
-- Minor bug fix for net message initialization timing
+- TraceGroundSample now filters out all player entities, not just the current player.
 
 ## Console Commands
 
@@ -63,7 +57,7 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 
 ## Development Status
 
-This is version 0.3. The addon is still being tuned and improved. Feedback and suggestions are welcome!
+This is version 0.31. The addon is still being tuned and improved. Feedback and suggestions are welcome!
 
 ## Credits
 
@@ -169,9 +163,9 @@ Fork it. Modify it. Optimize it. Pretend you would have written it cleaner.
 
 [h2]Development Status[/h2]
 
-[b]Version 0.3 - Current Release[/b]
+[b]Version 0.31 - Current Release[/b]
 
-This version adds multiplayer config sync better stair handling foot locking and a minor bug fix. More tuning will come.
+TraceGroundSample now filters out all player entities, not just the current player.
 
 [h2]Credits[/h2]
 
