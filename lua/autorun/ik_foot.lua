@@ -100,7 +100,11 @@ if CLIENT then
 			endpos = startPos - Vector(0, 0, groundDist),
 			mins = Vector(-2, -2, 0),
 			maxs = Vector(2, 2, 4),
-			filter = ply
+			filter = function(ent)
+				if ent == ply then return false end
+				if ent:IsPlayer() then return false end
+				return true
+			end
 		})
 
 		if trace.Hit then
