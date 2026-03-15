@@ -63,12 +63,147 @@ if CLIENT then
 		end
 	end
 
+	local function CopyVector(vec)
+		return Vector(vec.x, vec.y, vec.z)
+	end
+
+	local function CopyAngle(ang)
+		return Angle(ang.p, ang.y, ang.r)
+	end
+
+	local function AddVectors(a, b)
+		return Vector(a.x + b.x, a.y + b.y, a.z + b.z)
+	end
+
+	local function SubVectors(a, b)
+		return Vector(a.x - b.x, a.y - b.y, a.z - b.z)
+	end
+
+	local function AddAngles(a, b)
+		return Angle(a.p + b.p, a.y + b.y, a.r + b.r)
+	end
+
+	local function SubAngles(a, b)
+		return Angle(a.p - b.p, a.y - b.y, a.r - b.r)
+	end
+
+	local function VectorNear(a, b, epsilon)
+		epsilon = epsilon or 0.01
+		return math.abs(a.x - b.x) <= epsilon
+			and math.abs(a.y - b.y) <= epsilon
+			and math.abs(a.z - b.z) <= epsilon
+	end
+
+	local function AngleNear(a, b, epsilon)
+		epsilon = epsilon or 0.05
+		return math.abs(math.AngleDifference(a.p, b.p)) <= epsilon
+			and math.abs(math.AngleDifference(a.y, b.y)) <= epsilon
+			and math.abs(math.AngleDifference(a.r, b.r)) <= epsilon
+	end
+
+	local function GetCurrentBonePosition(ply, bone)
+		if bone == nil then return Vector(0, 0, 0) end
+
+		local pos
+		if UsePACBoneAPI() and ply.pac_boneanim and ply.pac_boneanim.positions then
+			pos = ply.pac_boneanim.positions[bone]
+		end
+
+		if not pos then
+			pos = ply:GetManipulateBonePosition(bone)
+		end
+
+		if not pos then
+			return Vector(0, 0, 0)
+		end
+
+		return CopyVector(pos)
+	end
+
+	local function GetCurrentBoneAngles(ply, bone)
+		if bone == nil then return Angle(0, 0, 0) end
+
+		local ang
+		if UsePACBoneAPI() and ply.pac_boneanim and ply.pac_boneanim.angles then
+			ang = ply.pac_boneanim.angles[bone]
+		end
+
+		if not ang then
+			ang = ply:GetManipulateBoneAngles(bone)
+		end
+
+		if not ang then
+			return Angle(0, 0, 0)
+		end
+
+		return CopyAngle(ang)
+	end
+
+	local function GetIKBlendState(ply)
+		ply.IKBlendState = ply.IKBlendState or { pos = {}, ang = {} }
+		return ply.IKBlendState
+	end
+
+	local function ApplyBlendedBonePosition(ply, bone, ikOffset)
+		if bone == nil then return end
+
+		local state = GetIKBlendState(ply)
+		local entry = state.pos[bone]
+
+		if not entry then
+			entry = { applied = Vector(0, 0, 0), final = nil }
+			state.pos[bone] = entry
+		end
+
+		local current = GetCurrentBonePosition(ply, bone)
+		local base = current
+
+		if entry.final and VectorNear(current, entry.final) then
+			base = SubVectors(current, entry.applied)
+		end
+
+		local final = AddVectors(base, ikOffset)
+		SetBonePosition(ply, bone, final)
+
+		entry.applied = CopyVector(ikOffset)
+		entry.final = CopyVector(final)
+	end
+
+	local function ApplyBlendedBoneAngles(ply, bone, ikOffset)
+		if bone == nil then return end
+
+		local state = GetIKBlendState(ply)
+		local entry = state.ang[bone]
+
+		if not entry then
+			entry = { applied = Angle(0, 0, 0), final = nil }
+			state.ang[bone] = entry
+		end
+
+		local current = GetCurrentBoneAngles(ply, bone)
+		local base = current
+
+		if entry.final and AngleNear(current, entry.final) then
+			base = SubAngles(current, entry.applied)
+		end
+
+		local final = AddAngles(base, ikOffset)
+		SetBoneAngles(ply, bone, final)
+
+		entry.applied = CopyAngle(ikOffset)
+		entry.final = CopyAngle(final)
+	end
+
 	local function GetIKBones(ply)
 		local model = ply:GetModel()
 		local bones = ply.IKBones
 
 		if bones and bones.model == model then
 			return bones
+		end
+
+		if bones and bones.model ~= model then
+			ply.IKBlendState = nil
 		end
 
 		bones = {
@@ -289,8 +424,11 @@ if CLIENT then
 		end
 
 		-- lock or clamp in 3d
-		local maxHorizontalMovePerFrame = 2.5
-		local maxVerticalMovePerFrame = 3
+		local frameDt = math.Clamp(FrameTime(), 1 / 300, 1 / 20)
+		local horizontalFollowSpeed = math.max(220, velocity2D * 1.2 + 120)
+		local verticalFollowSpeed = math.max(180, math.abs(vertVel) * 1.1 + 140)
+		local maxHorizontalMovePerFrame = math.max(2.5, horizontalFollowSpeed * frameDt)
+		local maxVerticalMovePerFrame = math.max(3, verticalFollowSpeed * frameDt)
 
 		if ply.IKFootState.left.planted and ply.IKFootState.left.lockPos then
 			lFootPos = ply.IKFootState.left.lockPos
@@ -360,19 +498,40 @@ if CLIENT then
 
 		if ply:OnGround() then
 			-- body drop from ground
-			local rawMaxDist = math.max(lDist, rDist)
-			local rawMinDist = math.min(lDist, rDist)
+			local lGroundHit = lSamples.center.hit
+			local rGroundHit = rSamples.center.hit
+			local midGroundHit = midSamples and midSamples.center and midSamples.center.hit
+
+			local safeLDist = lDist
+			local safeRDist = rDist
+
+			if not lGroundHit and rGroundHit then
+				safeLDist = rDist
+			elseif not rGroundHit and lGroundHit then
+				safeRDist = lDist
+			elseif not lGroundHit and not rGroundHit then
+				if midGroundHit then
+					safeLDist = midDist
+					safeRDist = midDist
+				else
+					safeLDist = traceStartOffset
+					safeRDist = traceStartOffset
+				end
+			end
+
+			local rawMaxDist = math.max(safeLDist, safeRDist)
+			local rawMinDist = math.min(safeLDist, safeRDist)
 			local rawHeightDiff = rawMaxDist - rawMinDist
 			
 			local stairThreshold = 10
 			local midToMinDiff = midDist - rawMinDist
 			local minToMaxDiff = rawMaxDist - rawMinDist
-			local stairsDetected = rawHeightDiff > stairThreshold and midToMinDiff < (minToMaxDiff * 0.4)
+			local stairsDetected = midGroundHit and rawHeightDiff > stairThreshold and midToMinDiff < (minToMaxDiff * 0.4)
 
-			local effLDist = lDist
-			local effRDist = rDist
+			local effLDist = safeLDist
+			local effRDist = safeRDist
 			if stairsDetected then
-				if lDist > rDist then
+				if safeLDist > safeRDist then
 					effLDist = midDist
 				else
 					effRDist = midDist
@@ -389,10 +548,12 @@ if CLIENT then
 			local stairsReduction = stairsDetected and 0.1 or (heightDiff > 15 and 0.2 or 1.0)
 			local extraDrop = Lerp(unevenFactor, extraBodyDrop, extraBodyDropUneven) * stairsReduction
 			
-			local baseDrop = stairsDetected and midDist or maxDist
+			local baseDrop = stairsDetected and midDist or avgDist
 			local bodyDrop = math.max(baseDrop - traceStartOffset, 0)
-			bodyDrop = bodyDrop + (heightDiff * unevenDropScale * (stairsDetected and 0.1 or 0.25)) + extraDrop
-			bodyDrop = math.Clamp(bodyDrop, 0, groundDist * 0.4)
+			bodyDrop = bodyDrop + (heightDiff * unevenDropScale * (stairsDetected and 0.1 or 0.2)) + extraDrop
+
+			local maxBodyDrop = math.min(groundDist * 0.22, legLength * 0.3)
+			bodyDrop = math.Clamp(bodyDrop, 0, math.max(maxBodyDrop, 2))
 			
 			if not ply.IKLastBodyDrop then
 				ply.IKLastBodyDrop = bodyDrop
@@ -557,15 +718,15 @@ if CLIENT then
 		ply.IKResult.lFoot = LerpAngle(lerpTime, ply.IKResult.lFoot, ikResult.lFoot)
 		ply.IKResult.rFoot = LerpAngle(lerpTime, ply.IKResult.rFoot, ikResult.rFoot)
 
-		SetBonePosition(ply, 0, ply.IKResult.basePos)
-		SetBoneAngles(ply, 0, ply.IKResult.baseAng)
+		ApplyBlendedBonePosition(ply, 0, ply.IKResult.basePos)
+		ApplyBlendedBoneAngles(ply, 0, ply.IKResult.baseAng)
 
-		SetBoneAngles(ply, bones.lCalf, ply.IKResult.lCalf)
-		SetBoneAngles(ply, bones.rCalf, ply.IKResult.rCalf)
-		SetBoneAngles(ply, bones.lThigh, ply.IKResult.lThigh)
-		SetBoneAngles(ply, bones.rThigh, ply.IKResult.rThigh)
-		SetBoneAngles(ply, bones.lFoot, ply.IKResult.lFoot)
-		SetBoneAngles(ply, bones.rFoot, ply.IKResult.rFoot)
+		ApplyBlendedBoneAngles(ply, bones.lCalf, ply.IKResult.lCalf)
+		ApplyBlendedBoneAngles(ply, bones.rCalf, ply.IKResult.rCalf)
+		ApplyBlendedBoneAngles(ply, bones.lThigh, ply.IKResult.lThigh)
+		ApplyBlendedBoneAngles(ply, bones.rThigh, ply.IKResult.rThigh)
+		ApplyBlendedBoneAngles(ply, bones.lFoot, ply.IKResult.lFoot)
+		ApplyBlendedBoneAngles(ply, bones.rFoot, ply.IKResult.rFoot)
 
 		if cvDebug:GetInt() > 0 then
 			DrawDebug(ply, ikResult, ikResult.bodyDrop or 0)
@@ -613,13 +774,13 @@ if CLIENT then
 		local bones = GetIKBones(ply)
 		if not (bones.lFoot and bones.rFoot) then return end
 
-		SetBonePosition(ply, 0, Vector())
-		SetBoneAngles(ply, 0, Angle())
-		SetBoneAngles(ply, bones.lCalf, Angle())
-		SetBoneAngles(ply, bones.rCalf, Angle())
-		SetBoneAngles(ply, bones.lThigh, Angle())
-		SetBoneAngles(ply, bones.rThigh, Angle())
-		SetBoneAngles(ply, bones.lFoot, Angle())
-		SetBoneAngles(ply, bones.rFoot, Angle())
+		ApplyBlendedBonePosition(ply, 0, Vector())
+		ApplyBlendedBoneAngles(ply, 0, Angle())
+		ApplyBlendedBoneAngles(ply, bones.lCalf, Angle())
+		ApplyBlendedBoneAngles(ply, bones.rCalf, Angle())
+		ApplyBlendedBoneAngles(ply, bones.lThigh, Angle())
+		ApplyBlendedBoneAngles(ply, bones.rThigh, Angle())
+		ApplyBlendedBoneAngles(ply, bones.lFoot, Angle())
+		ApplyBlendedBoneAngles(ply, bones.rFoot, Angle())
 	end)
 end

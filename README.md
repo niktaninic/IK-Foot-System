@@ -1,6 +1,6 @@
 # IK Foot System
 
-**Version 0.31** - TraceGroundSample now filters out all player entities, not just the current player.
+**Version 0.32** - Better PAC3 custom animation compatibility + reduced uneven-terrain sinking.
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
@@ -17,9 +17,11 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Debug visualization modes
 - Preset system for quick configuration switching
 
-## What's New in 0.31
+## What's New in 0.32
 
-- TraceGroundSample now filters out all player entities, not just the current player.
+- IK now blends additively with existing bone manipulation data, improving PAC3 custom animation compatibility.
+- Body drop is now more stable on uneven surfaces (safer trace-miss fallback + stricter max drop clamp).
+- GUI reset defaults/ranges are aligned with runtime ConVar defaults to avoid accidental over-aggressive drop settings.
 
 ## Console Commands
 
@@ -57,7 +59,7 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 
 ## Development Status
 
-This is version 0.31. The addon is still being tuned and improved. Feedback and suggestions are welcome!
+This is version 0.32. The addon is still being tuned and improved. Feedback and suggestions are welcome!
 
 ## Credits
 
@@ -163,9 +165,10 @@ Fork it. Modify it. Optimize it. Pretend you would have written it cleaner.
 
 [h2]Development Status[/h2]
 
-[b]Version 0.31 - Current Release[/b]
+[b]Version 0.32 - Current Release[/b]
 
-TraceGroundSample now filters out all player entities, not just the current player.
+Improved PAC3 custom animation compatibility by blending IK with existing bone manipulation data.
+
 
 [h2]Credits[/h2]
 
