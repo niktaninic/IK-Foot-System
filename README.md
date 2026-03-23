@@ -1,51 +1,81 @@
 # IK Foot System
 
-**Version 0.32** - Better PAC3 custom animation compatibility + reduced uneven-terrain sinking.
+**Version 0.40** - Modular rewrite with analytical 2-bone IK, support-foot priority, and spring smoothing.
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
 ## Features
 
 - Dynamic foot placement on uneven terrain
-- Smooth animation interpolation
+- Critically damped spring smoothing for body and leg response
 - Body position adjustment based on ground height
-- Midpoint stair sampling for stable climbing
+- Multi-point per-foot ground sampling for stable contact
 - Per-foot world-space planting and swing detection
 - Configurable foot rotation to match surface angles
 - Idle stabilization to prevent jittering
-- PAC3 compatibility
+- PAC3 compatibility (additive bone blending)
 - Debug visualization modes
 - Preset system for quick configuration switching
+- Analytical 2-bone leg solving with consistent knee bend direction
+- Lower-foot support priority for curbs, edges, and uneven terrain
+- Automatic model detection and auto-configuration on playermodel swap
+- Anti-clip guard to prevent feet from clipping into geometry
+- Dynamic sole correction feedback loop
+- Crouch transition blending
+- NaN recovery and consecutive failure tracking
 
-## What's New in 0.32
+## What's New in 0.40
 
-- IK now blends additively with existing bone manipulation data, improving PAC3 custom animation compatibility.
-- Body drop is now more stable on uneven surfaces (safer trace-miss fallback + stricter max drop clamp).
-- GUI reset defaults/ranges are aligned with runtime ConVar defaults to avoid accidental over-aggressive drop settings.
+- Runtime split into dedicated modules for ground tracing, state, solving, control, and PAC-safe application.
+- New analytical 2-bone solver replaces the previous pseudo-IK leg bending.
+- Body drop now prioritizes the shorter-reaching leg and obeys a dedicated maximum body-drop cvar.
+- Foot planting now uses stable world locks with support-foot priority and hard idle locks.
+- New spring smoothing replaces simple lerp-based blending.
+- Auto model detection: scans mesh and bones on playermodel change, applies suggested settings automatically.
+- Anti-clip system validates ground contacts and prevents feet from being locked inside geometry.
+- Dynamic sole correction: feedback loop that adjusts sole offset when penetration is detected.
+- Crouch transition handling with foot lock release and gradual IK blend-in.
+- Hard reset command (`ik_foot_hard_reset`) that nukes all IK state including PAC3 layer.
 
 ## Console Commands
 
 - `ik_foot_menu` - Opens the configuration menu
+- `ik_foot_hard_reset` - Nuclear reset of all IK state
 - `!ikfoot` or `/ikfoot` - Chat commands to open menu
 
 ## Configuration Variables
 
+### General
 - `ik_foot` - enable/disable IK foot system (default: 1)
-- `ik_foot_lean` - enable/disable body leaning (default: 0)
-- `ik_foot_ground_distance` - ground detection range (default: 45)
+- `ik_foot_lean` - enable/disable body leaning (default: 0) (sometimes works)
+- `ik_foot_debug` - debug visualization level 0-2 (default: 0)
 - `ik_foot_smoothing` - animation smoothing factor (default: 17)
-- `ik_foot_debug` - debug visualization level (default: 0)
-- `ik_foot_leg_length` - leg length for calculations (default: 45)
+
+### Ground Detection
+- `ik_foot_ground_distance` - ground trace distance (default: 45)
 - `ik_foot_trace_start_offset` - trace starting height offset (default: 30)
-- `ik_foot_sole_offset` - sole contact point offset (default: 1.75)
-- `ik_foot_uneven_drop_scale` - body drop scaling on uneven terrain (default: 0.35)
-- `ik_foot_extra_body_drop` - base body drop amount (default: 0.3)
-- `ik_foot_extra_body_drop_uneven` - additional body drop on slopes (default: 1.2)
-- `ik_foot_high_foot_bend_boost` - knee bend multiplier (default: 1.45)
+- `ik_foot_sole_offset` - sole contact point offset (default: 0)
+
+### Leg & Foot
+- `ik_foot_leg_length` - leg length for IK calculations (default: 45)
+- `ik_foot_high_foot_bend_boost` - knee bend multiplier for raised feet (default: 1.70)
 - `ik_foot_rotation_scale` - foot rotation intensity (default: 0.15)
-- `ik_foot_stabilize_idle` - stabilize when idle (default: 1)
-- `ik_foot_idle_velocity` - idle detection threshold (default: 5)
-- `ik_foot_idle_threshold` - idle position tolerance (default: 0.5)
+
+### Body & Stability
+- `ik_foot_uneven_drop_scale` - body drop scaling on uneven terrain (default: 0.15)
+- `ik_foot_extra_body_drop` - base body drop on flat ground (default: 0.3)
+- `ik_foot_extra_body_drop_uneven` - additional body drop on slopes (default: 1.2)
+- `ik_foot_max_body_drop` - maximum body drop cap (default: 42)
+- `ik_foot_lock_strength` - foot planting stickiness (default: 0.85)
+- `ik_foot_release_speed` - foot speed needed to release a planted foot (default: 65)
+- `ik_foot_rotation_smoothing` - rotation smoothing speed (default: 20)
+- `ik_foot_stabilize_idle` - stabilize feet when idle (default: 1)
+- `ik_foot_idle_velocity` - idle detection velocity threshold (default: 5)
+
+### Automation & Safety
+- `ik_foot_auto_model_detect` - auto-apply settings on playermodel change (default: 1)
+- `ik_foot_anti_clip` - prevent feet from clipping into ground (default: 1)
+- `ik_foot_dynamic_sole` - dynamic sole correction feedback loop (default: 1)
 
 ## Usage
 
@@ -57,16 +87,133 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 6. Walk around on uneven terrain to see the effects
 
 
+
+## Troubleshooting & Fixes (when it inevitably breaks)
+
+### Foot hovering above ground
+
+**what's happening:**
+foot floats slightly above terrain, especially on weird slopes or edges
+
+**why:**
+trace isn't reaching far enough or sole offset is off
+
+**fix:**
+- increase `ik_foot_ground_distance`
+- tweak `ik_foot_sole_offset`
+- if model is cursed, slightly increase `ik_foot_leg_length`
+
+---
+
+### Feet clipping into the ground
+
+**what's happening:**
+foot goes into the floor like it's not solid
+
+**why:**
+anti-clip is off or contact detection is garbage
+
+**fix:**
+- enable `ik_foot_anti_clip 1`
+- enable `ik_foot_dynamic_sole 1`
+- adjust `ik_foot_sole_offset`
+
+---
+
+### IK just stops working
+
+**what's happening:**
+no movement, feet freeze, or system just gives up
+
+**why:**
+state desynced / model changed / something (PAC3, probably) touched bones
+
+**fix (quick version):**
+- `ik_foot 0`
+- change playermodel to anything else
+- change back
+- `ik_foot 1`
+
+**fix (nuclear option):**
+- `ik_foot_hard_reset`
+
+yes this actually fixes most problems. dont ask.
+
+---
+
+### Character leaning forward / doing the michael jackson thing
+
+**what's happening:**
+body leans forward, feet stay behind like physics gave up
+
+**why:**
+body drop or crouch transition got weird
+
+**fix:**
+- lower `ik_foot_extra_body_drop`
+- lower `ik_foot_extra_body_drop_uneven`
+- check `ik_foot_max_body_drop`
+
+---
+
+### Feet jittering when standing still
+
+**what's happening:**
+small constant shaking when idle
+
+**why:**
+idle detection too sensitive or smoothing too low
+
+**fix:**
+- increase `ik_foot_smoothing`
+- increase `ik_foot_idle_velocity`
+- make sure `ik_foot_stabilize_idle 1`
+
+---
+
+### IK breaks after changing playermodel
+
+**what's happening:**
+everything was fine, then you changed model and now it's cursed
+
+**why:**
+cached bone/model data no longer matches reality
+
+**fix:**
+- `ik_foot 0`
+- switch to another model
+- switch back
+- `ik_foot 1`
+
+or just:
+- `ik_foot_hard_reset`
+
+---
+
+## Quick Recovery (do this before you start tweaking 50 sliders)
+
+1. `ik_foot 0`
+2. change playermodel
+3. change back
+4. `ik_foot 1`
+5. still broken? → `ik_foot_hard_reset`
+
+this resets like 90% of issues.
+
+## Notes
+
+- some maps are just… bad. weird geometry, broken collisions, etc.
+- the system tries to handle it but it's still Source engine
+- if something looks cursed, it probably is
+
 ## Development Status
 
-This is version 0.32. The addon is still being tuned and improved. Feedback and suggestions are welcome!
+Version 0.40. Still being tuned. Feedback welcome.
 
 ## Credits
 
 Created by nikt_ani_nic
 Inspired by https://steamcommunity.com/sharedfiles/filedetails/?id=1605334558
-
-**Note:** README and comments were generated with AI assistance.
 
 ## Steam Workshop Description (BBCode)
 
@@ -100,22 +247,26 @@ If you can stand on it the system will try to respect it.
 
 [list]
 [*]Dynamic foot placement on uneven terrain
-[*]Smooth animation interpolation
+[*]Critically damped spring smoothing
 [*]Automatic body height adjustment based on ground level
-[*]Midpoint stair stabilization
+[*]Multi-point per-foot ground sampling
 [*]Per-foot world-space locking and swing detection
 [*]Configurable foot rotation to match surface angles
 [*]Optional body leaning
 [*]Idle stabilization to prevent jittering
-[*]PAC3 compatibility
+[*]PAC3 compatibility (additive bone blending)
 [*]Debug visualization modes
 [*]Preset system for quick configuration switching
+[*]Auto model detection and configuration
+[*]Anti-clip guard for ground penetration
+[*]Dynamic sole correction feedback loop
 [/list]
 
 [h2]Console Commands[/h2]
 
 [list]
 [*][b]ik_foot_menu[/b] - Opens the configuration menu
+[*][b]ik_foot_hard_reset[/b] - Nuclear reset of all IK state
 [*][b]!ikfoot[/b] or [b]/ikfoot[/b] - Chat commands to open the menu
 [/list]
 
@@ -129,20 +280,26 @@ Fully configurable via console variables:
 [list]
 [*][b]ik_foot[/b] - Enable/disable system (default: 1)
 [*][b]ik_foot_lean[/b] - Enable/disable body leaning (default: 0)
-[*][b]ik_foot_ground_distance[/b] - Ground detection range (default: 45)
-[*][b]ik_foot_smoothing[/b] - Animation smoothing factor (default: 17)
 [*][b]ik_foot_debug[/b] - Debug visualization level (default: 0)
+[*][b]ik_foot_ground_distance[/b] - Ground trace distance (default: 45)
+[*][b]ik_foot_smoothing[/b] - Animation smoothing factor (default: 17)
 [*][b]ik_foot_leg_length[/b] - Leg length for calculations (default: 45)
 [*][b]ik_foot_trace_start_offset[/b] - Trace starting height offset (default: 30)
-[*][b]ik_foot_sole_offset[/b] - Sole contact point offset (default: 1.75)
-[*][b]ik_foot_uneven_drop_scale[/b] - Body drop scaling on uneven terrain (default: 0.35)
+[*][b]ik_foot_sole_offset[/b] - Sole contact point offset (default: 0)
+[*][b]ik_foot_uneven_drop_scale[/b] - Body drop scaling on uneven terrain (default: 0.15)
 [*][b]ik_foot_extra_body_drop[/b] - Base body drop amount (default: 0.3)
 [*][b]ik_foot_extra_body_drop_uneven[/b] - Additional body drop on slopes (default: 1.2)
-[*][b]ik_foot_high_foot_bend_boost[/b] - Knee bend multiplier (default: 1.45)
+[*][b]ik_foot_high_foot_bend_boost[/b] - Knee bend multiplier (default: 1.70)
 [*][b]ik_foot_rotation_scale[/b] - Foot rotation intensity (default: 0.15)
+[*][b]ik_foot_lock_strength[/b] - Foot planting stickiness (default: 0.85)
+[*][b]ik_foot_release_speed[/b] - Foot release speed threshold (default: 65)
+[*][b]ik_foot_rotation_smoothing[/b] - Rotation smoothing speed (default: 20)
+[*][b]ik_foot_max_body_drop[/b] - Maximum body drop (default: 42)
 [*][b]ik_foot_stabilize_idle[/b] - Stabilize when idle (default: 1)
 [*][b]ik_foot_idle_velocity[/b] - Idle detection threshold (default: 5)
-[*][b]ik_foot_idle_threshold[/b] - Idle position tolerance (default: 0.5)
+[*][b]ik_foot_auto_model_detect[/b] - Auto-detect model settings (default: 1)
+[*][b]ik_foot_anti_clip[/b] - Foot anti-clip guard (default: 1)
+[*][b]ik_foot_dynamic_sole[/b] - Dynamic sole correction (default: 1)
 [/list]
 
 [h2]Usage[/h2]
@@ -165,16 +322,52 @@ Fork it. Modify it. Optimize it. Pretend you would have written it cleaner.
 
 [h2]Development Status[/h2]
 
-[b]Version 0.32 - Current Release[/b]
+[b]Version 0.40 - Current Release[/b]
 
-Improved PAC3 custom animation compatibility by blending IK with existing bone manipulation data.
+Modular rewrite with analytical 2-bone IK, auto model detection, anti-clip, and spring smoothing.
 
+[h2]Troubleshooting (when it inevitably breaks)[/h2]
+
+[b]Foot hovering above ground[/b]
+Trace isn't reaching far enough or sole offset is off.
+→ Increase [b]ik_foot_ground_distance[/b], tweak [b]ik_foot_sole_offset[/b], or bump [b]ik_foot_leg_length[/b] if your model is cursed.
+
+[b]Feet clipping into the ground[/b]
+Anti-clip is off or contact detection is having a bad day.
+→ Enable [b]ik_foot_anti_clip 1[/b] and [b]ik_foot_dynamic_sole 1[/b]. Adjust [b]ik_foot_sole_offset[/b].
+
+[b]IK just stops working[/b]
+State desynced, model changed, or something (PAC3 probably) touched the bones.
+→ Quick fix: [b]ik_foot 0[/b] → change model → change back → [b]ik_foot 1[/b]
+→ Nuclear option: [b]ik_foot_hard_reset[/b]
+Yes this actually fixes most problems. Don't ask.
+
+[b]Character leaning forward / doing the michael jackson[/b]
+Body drop or crouch transition got weird.
+→ Lower [b]ik_foot_extra_body_drop[/b], [b]ik_foot_extra_body_drop_uneven[/b], check [b]ik_foot_max_body_drop[/b].
+
+[b]Feet jittering when standing still[/b]
+Idle detection too sensitive or smoothing too low.
+→ Increase [b]ik_foot_smoothing[/b] and [b]ik_foot_idle_velocity[/b]. Make sure [b]ik_foot_stabilize_idle 1[/b].
+
+[b]IK breaks after changing playermodel[/b]
+Cached bone/model data no longer matches reality.
+→ [b]ik_foot 0[/b] → switch model → switch back → [b]ik_foot 1[/b]
+→ Or just: [b]ik_foot_hard_reset[/b]
+
+[b]Quick recovery (do this before tweaking 50 sliders):[/b]
+1. [b]ik_foot 0[/b]
+2. Change playermodel
+3. Change back
+4. [b]ik_foot 1[/b]
+5. Still broken? → [b]ik_foot_hard_reset[/b]
+This fixes like 90% of issues.
+
+[i]Some maps are just bad. Weird geometry, broken collisions, etc. The system tries its best but it's still Source engine. If something looks cursed, it probably is.[/i]
 
 [h2]Credits[/h2]
 
 Created by [b]nikt_ani_nic[/b]
 Inspired by:
 [url=https://steamcommunity.com/sharedfiles/filedetails/?id=1605334558]Original inspiration addon[/url]
-
-Some README and comments were generated with AI assistance.
 ```
