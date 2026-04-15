@@ -11,6 +11,13 @@ local MAX_FOOT_PITCH = 25
 local MAX_FOOT_ROLL = 20
 local REFERENCE_LEG_LENGTH = 45
 local CROUCH_BLEND_TIME = 0.3
+local AIR_BODY_DROP_MAX = 6
+local AIR_KNEE_MIN = 8
+local AIR_KNEE_MAX = 24
+local AIR_FOOT_PITCH_ASCEND = -6
+local AIR_FOOT_PITCH_DESCEND = 14
+local AIR_SWING_SPEED = 6
+local AIR_SWING_AMP = 4
 
 -- per-player sole correction. one of those things that took 3 days to debug
 local DynSoleState = {}
@@ -242,7 +249,26 @@ function Controller.Calculate(ply, skeleton)
 		lFootRot = ComputeFootRotation(lContact.samples, footRotScale)
 		rFootRot = ComputeFootRotation(rContact.samples, footRotScale)
 	else
-		state.bodyDrop = nil
+		local airBlend = math.Clamp(math.abs(velZ) / 260, 0, 1)
+		local moveBlend = math.Clamp(vel2D / 160, 0, 1)
+		local airCycle = CurTime() * (AIR_SWING_SPEED + moveBlend * 3)
+		local swing = math.sin(airCycle) * AIR_SWING_AMP * moveBlend
+
+		bodyDrop = math.min((state.bodyDrop or 0) * (1 - dt * 4), AIR_BODY_DROP_MAX * modelScale)
+		if bodyDrop <= 0.05 then
+			bodyDrop = 0
+			state.bodyDrop = nil
+		else
+			state.bodyDrop = bodyDrop
+		end
+
+		local airKnee = Lerp(airBlend, AIR_KNEE_MIN, AIR_KNEE_MAX) + moveBlend * 3
+		lKnee = math.Clamp(airKnee + swing, AIR_KNEE_MIN, AIR_KNEE_MAX)
+		rKnee = math.Clamp(airKnee - swing, AIR_KNEE_MIN, AIR_KNEE_MAX)
+
+		local footPitch = Lerp(math.Clamp((velZ + 250) / 500, 0, 1), AIR_FOOT_PITCH_DESCEND, AIR_FOOT_PITCH_ASCEND)
+		lFootRot = Angle(0, footPitch + swing * 0.4, 0)
+		rFootRot = Angle(0, footPitch - swing * 0.4, 0)
 
 		-- in the air. slowly forget sole correction
 		if dynamicSole then

@@ -113,6 +113,10 @@ end
 function Apply.StripIKFromBones(ply, bones)
 	-- undo what ik did to the bones before recalculating
 	-- if we skip this everything drifts into oblivion
+	-- note: aux root bones (hair, eyebrows etc) are NOT stripped here.
+	-- stripping them before SetupBones interferes with weapon bone merging.
+	-- ApplyBlendedBone handles their delta internally so its fine
+	-- i hate this addon
 	local blendState = RT.GetIKBlendState(ply)
 	if not blendState then return end
 
@@ -187,6 +191,13 @@ function Apply.ResetPlayer(ply, bones)
 	RT.ApplyBlendedBonePosition(ply, 0, Vector())
 	RT.ApplyBlendedBoneAngles(ply, 0, Angle())
 
+	if bones.auxRoots and #bones.auxRoots > 0 and not RT.IsBoneMergeActive(ply, bones) then
+		for _, auxBone in ipairs(bones.auxRoots) do
+			RT.ApplyBlendedBonePosition(ply, auxBone, Vector())
+			RT.ApplyBlendedBoneAngles(ply, auxBone, Angle())
+		end
+	end
+
 	if bones.lCalf then RT.ApplyBlendedBoneAngles(ply, bones.lCalf, Angle()) end
 	if bones.rCalf then RT.ApplyBlendedBoneAngles(ply, bones.rCalf, Angle()) end
 	if bones.lThigh then RT.ApplyBlendedBoneAngles(ply, bones.lThigh, Angle()) end
@@ -205,6 +216,11 @@ function Apply.HardResetPlayer(ply)
 
 	-- bypass blend layer and zero everything. nuclear option
 	local allBones = {0, bones.lThigh, bones.rThigh, bones.lCalf, bones.rCalf, bones.lFoot, bones.rFoot}
+	if bones.auxRoots then
+		for _, auxBone in ipairs(bones.auxRoots) do
+			allBones[#allBones + 1] = auxBone
+		end
+	end
 	for _, bone in ipairs(allBones) do
 		if bone then
 			ply:ManipulateBonePosition(bone, Vector())
@@ -269,6 +285,28 @@ function Apply.ApplyResult(ply, bones, result)
 
 	RT.ApplyBlendedBonePosition(ply, 0, s.basePos)
 	RT.ApplyBlendedBoneAngles(ply, 0, s.baseAng)
+
+	-- apply same body offset to auxiliary root bones (hair, eyebrows, lashes)
+	-- without this they desync from the body and appear doubled
+	-- SKIP when bone merge is active (weapon equipped) because ManipulateBone
+	-- on root bones corrupts SetupBones during bone merge
+	local auxRoots = bones.auxRoots
+	if auxRoots and #auxRoots > 0 then
+		if RT.IsBoneMergeActive(ply, bones) then
+			-- weapon equipped. clear any leftover aux manipulations
+			if not ply.IKAuxCleared then
+				RT.ClearAuxBoneManipulations(ply, bones)
+				ply.IKAuxCleared = true
+			end
+		else
+			ply.IKAuxCleared = nil
+			for _, auxBone in ipairs(auxRoots) do
+				RT.ApplyBlendedBonePosition(ply, auxBone, s.basePos)
+				RT.ApplyBlendedBoneAngles(ply, auxBone, s.baseAng)
+			end
+		end
+	end
+
 	RT.ApplyBlendedBoneAngles(ply, bones.lThigh, s.leftThigh)
 	RT.ApplyBlendedBoneAngles(ply, bones.rThigh, s.rightThigh)
 	RT.ApplyBlendedBoneAngles(ply, bones.lCalf, s.leftCalf)

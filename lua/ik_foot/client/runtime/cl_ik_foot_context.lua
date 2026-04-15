@@ -153,6 +153,40 @@ end
 
 -- bone ids. cached per model so we dont look them up every frame
 
+-- base bone count per model path. weapon bone merge adds bones AFTER
+-- the models native bones so we need to know where the models bones end
+local ModelBaseBoneCount = {}
+
+local function GetBaseBoneCount(model)
+	if ModelBaseBoneCount[model] then return ModelBaseBoneCount[model] end
+	local mdl = ClientsideModel(model, RENDERGROUP_OTHER)
+	if IsValid(mdl) then
+		local count = mdl:GetBoneCount() or 0
+		mdl:Remove()
+		ModelBaseBoneCount[model] = count
+		return count
+	end
+	return 0
+end
+
+-- find auxiliary root bones (hair, eyebrows, lashes etc) that arent
+-- children of bone 0. only scans the models native bones to avoid
+-- picking up weapon bones from bone merge
+function RT.FindAuxRootBones(ply, model)
+	local baseBoneCount = GetBaseBoneCount(model)
+	local auxRoots = {}
+	if baseBoneCount <= 0 then return auxRoots end
+	for i = 1, baseBoneCount - 1 do
+		if ply:GetBoneParent(i) == -1 then
+			local name = ply:GetBoneName(i)
+			if name and name ~= "" then
+				auxRoots[#auxRoots + 1] = i
+			end
+		end
+	end
+	return auxRoots
+end
+
 function RT.GetIKBones(ply)
 	local model = ply:GetModel()
 	local bones = ply.IKBones
@@ -168,9 +202,36 @@ function RT.GetIKBones(ply)
 		rCalf  = ply:LookupBone("ValveBiped.Bip01_R_Calf"),
 		lThigh = ply:LookupBone("ValveBiped.Bip01_L_Thigh"),
 		rThigh = ply:LookupBone("ValveBiped.Bip01_R_Thigh"),
+		auxRoots = RT.FindAuxRootBones(ply, model),
+		baseBoneCount = GetBaseBoneCount(model),
 	}
+
 	ply.IKBones = bones
 	return bones
+end
+
+-- detect if weapon bone merge is active by comparing bone count
+-- weapon models add bones on top of the models native ones
+function RT.IsBoneMergeActive(ply, bones)
+	local base = bones.baseBoneCount or 0
+	if base <= 0 then return false end
+	return (ply:GetBoneCount() or 0) > base
+end
+
+-- zero out aux bone manipulations. must be called when bone merge
+-- activates or the stale ManipulateBone values corrupt SetupBones
+function RT.ClearAuxBoneManipulations(ply, bones)
+	local auxRoots = bones.auxRoots
+	if not auxRoots or #auxRoots == 0 then return end
+	local blendState = ply.IKBlendState
+	for _, auxBone in ipairs(auxRoots) do
+		RT.SetBonePosition(ply, auxBone, Vector())
+		RT.SetBoneAngles(ply, auxBone, Angle())
+		if blendState then
+			blendState.pos[auxBone] = nil
+			blendState.ang[auxBone] = nil
+		end
+	end
 end
 
 function RT.CanManipulateBones(ply)
@@ -186,8 +247,10 @@ IKFoot.ModelAnalysisCache = {}
 function IKFoot.InvalidateModelCache(model)
 	if model then
 		IKFoot.ModelAnalysisCache[model] = nil
+		ModelBaseBoneCount[model] = nil
 	else
 		IKFoot.ModelAnalysisCache = {}
+		ModelBaseBoneCount = {}
 	end
 end
 

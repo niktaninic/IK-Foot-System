@@ -7,6 +7,20 @@ hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 	-- the main ik hook. runs every frame for every player. no pressure
 	if not IsValid(ply) then return end
 
+	-- detect death/respawn and hard reset to prevent bone distortion
+	local alive = ply:Alive()
+	if ply.IKWasAlive == false and alive then
+		RT.Apply.HardResetPlayer(ply)
+		ply.IKWasAlive = alive
+		return
+	end
+	ply.IKWasAlive = alive
+
+	if not alive then
+		RT.Apply.ResetPlayer(ply)
+		return
+	end
+
 	local bones = RT.GetIKBones(ply)
 	if not RT.GetIKParamBool(ply, "enabled") then
 		RT.Apply.ResetPlayer(ply, bones)

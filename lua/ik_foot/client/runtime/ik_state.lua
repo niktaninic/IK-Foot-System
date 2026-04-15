@@ -55,6 +55,7 @@ function State.Reset(ply)
 	ply.IKApplyState = nil
 	ply.IKBlendState = nil
 	ply.IKFailCount = nil
+	ply.IKAuxCleared = nil
 end
 
 function State.HardReset(ply)
