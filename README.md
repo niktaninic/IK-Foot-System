@@ -1,6 +1,6 @@
 # IK Foot System
 
-**Version 0.40** - Modular rewrite with analytical 2-bone IK, support-foot priority, and spring smoothing.
+**Version 0.41** - Implement auxiliary bone handling and air state adjustments in IK system
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
@@ -24,18 +24,9 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Crouch transition blending
 - NaN recovery and consecutive failure tracking
 
-## What's New in 0.40
+## What's New in 0.41
 
-- Runtime split into dedicated modules for ground tracing, state, solving, control, and PAC-safe application.
-- New analytical 2-bone solver replaces the previous pseudo-IK leg bending.
-- Body drop now prioritizes the shorter-reaching leg and obeys a dedicated maximum body-drop cvar.
-- Foot planting now uses stable world locks with support-foot priority and hard idle locks.
-- New spring smoothing replaces simple lerp-based blending.
-- Auto model detection: scans mesh and bones on playermodel change, applies suggested settings automatically.
-- Anti-clip system validates ground contacts and prevents feet from being locked inside geometry.
-- Dynamic sole correction: feedback loop that adjusts sole offset when penetration is detected.
-- Crouch transition handling with foot lock release and gradual IK blend-in.
-- Hard reset command (`ik_foot_hard_reset`) that nukes all IK state including PAC3 layer.
+-Implement auxiliary bone handling and air state adjustments in IK system
 
 ## Console Commands
 
@@ -208,7 +199,7 @@ this resets like 90% of issues.
 
 ## Development Status
 
-Version 0.40. Still being tuned. Feedback welcome.
+Version 0.41. Still being tuned. Feedback welcome.
 
 ## Credits
 
@@ -322,9 +313,9 @@ Fork it. Modify it. Optimize it. Pretend you would have written it cleaner.
 
 [h2]Development Status[/h2]
 
-[b]Version 0.40 - Current Release[/b]
+[b]Version 0.41 - Current Release[/b]
 
-Modular rewrite with analytical 2-bone IK, auto model detection, anti-clip, and spring smoothing.
+Implement auxiliary bone handling and air state adjustments in IK system
 
 [h2]Troubleshooting (when it inevitably breaks)[/h2]
 
