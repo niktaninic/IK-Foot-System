@@ -1,9 +1,12 @@
 {
-	"title": "IK Foot System",
-	"type": "effects",
-	"tags": 
-	[
-		"fun",
-		"roleplay"
-	]
+    "title": "IK Foot System",
+    "type": "effects",
+    "tags": [
+        "fun",
+        "roleplay"
+    ],
+    "ignore": [
+        "README.md",
+        ".addon.json.swp"
+    ]
 }

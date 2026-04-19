@@ -176,6 +176,12 @@ function Controller.Calculate(ply, skeleton)
 			rReqDrop = math.max(rReqDrop - dynSoleCorr, 0)
 		end
 
+
+		local lTraceExcess = math.max(skeleton.left.footPos.z + 8 - traceStartZ, 0)
+		local rTraceExcess = math.max(skeleton.right.footPos.z + 8 - traceStartZ, 0)
+		lReqDrop = math.max(lReqDrop - lTraceExcess, 0)
+		rReqDrop = math.max(rReqDrop - rTraceExcess, 0)
+
 		-- figure out body drop. too little = floating. too much = underground. fun times
 		local avgDrop = (lReqDrop + rReqDrop) * 0.5
 		local maxDrop = math.max(lReqDrop, rReqDrop)
@@ -192,7 +198,8 @@ function Controller.Calculate(ply, skeleton)
 		reqDrop = math.max(reqDrop, minRequiredDrop)
 
 		local unevenFactor = math.Clamp(heightDiff / 10, 0, 1)
-		local desiredDrop = reqDrop + Lerp(unevenFactor, extraDrop, extraDropUneven) + heightDiff * unevenDropScale * 0.2
+		local terrainNeed = math.Clamp(maxDrop / math.max(extraDrop * 0.5, 0.3), 0, 1)
+		local desiredDrop = reqDrop + Lerp(unevenFactor, extraDrop, extraDropUneven) * terrainNeed + heightDiff * unevenDropScale * 0.2
 		local dropCap = math.min(groundDist * 0.95, legLength * 0.95, maxBodyDropCVar)
 		desiredDrop = math.Clamp(desiredDrop, 0, math.max(dropCap, 2))
 
