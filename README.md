@@ -1,6 +1,6 @@
 # IK Foot System
 
-**Version 0.41** - Implement auxiliary bone handling and air state adjustments in IK system
+**Version 0.42** - Weapon holdtype foot levitation fix and reliability improvements
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
@@ -24,9 +24,28 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Crouch transition blending
 - NaN recovery and consecutive failure tracking
 
-## What's New in 0.41
+## What's New in 0.42
 
--Implement auxiliary bone handling and air state adjustments in IK system
+- Fixed foot levitation when holding weapons (physgun, fists, any holdtype that raises foot bones in the animation).
+  Root cause: ground traces were starting from `max(traceStartZ, footBoneZ + 8)` — weapon animations push foot bones upward, which shifted the trace start point up, reducing effective trace range, causing missed ground hits on one side.
+  Fix: traces always start from `traceStartZ` (player origin + offset), independent of animation bone position.
+- Removed `lTraceExcess`/`rTraceExcess` subtraction from `lReqDrop`/`rReqDrop`. This was a redundant correction that fired incorrectly when weapon animations elevated foot bones, zeroing the required drop and preventing the body from descending.
+- Fixed auto-detect not firing on first playermodel load. Removed `hadPrevModel` gate — detection now triggers on any model change, including the initial one.
+- Fixed leg measurement race: bone positions on the very first frame can be garbage if `SetupBones` hasn't run yet. Measurement is now only cached if the result is greater than 20 units.
+- Added double-include guard (`_runtimeLoaded` flag) to prevent both `ik_foot.lua` and `init.lua` in `autorun/` from re-initializing the same runtime tables.
+- Fixed half-on-curb foot sinking: ground contact now clusters samples around the highest valid hit (tolerance: 3 units) instead of averaging all samples. Low-side air samples no longer drag the contact Z down.
+- Body lean moved from bone 0 (`Bip01`, world root with no visual effect) to `Bip01_Spine1`. Lean now actually does something.
+- Fixed lean calculation: was using `vel:Dot(ply:GetAngles():Right())` which includes pitch component. Now zeroes pitch before computing `Right()` and uses explicit XY dot product.
+- Fixed auto-detect suggested values: `leg_length` was hardcoded to 45, `ground_distance` was incorrectly set to `legLength`, `max_body_drop` floored too low, `traceStartRef` was divided by scale twice. All corrected.
+- Raised `ground_distance` default from 45 to 70.
+
+## What's New in 0.42
+
+- Implement auxiliary bone handling and air state adjustments in IK system
+
+## Development Status
+
+Version 0.42. Still being tuned. Feedback welcome.
 
 ## Console Commands
 
@@ -197,10 +216,6 @@ this resets like 90% of issues.
 - the system tries to handle it but it's still Source engine
 - if something looks cursed, it probably is
 
-## Development Status
-
-Version 0.41. Still being tuned. Feedback welcome.
-
 ## Credits
 
 Created by nikt_ani_nic
@@ -313,9 +328,22 @@ Fork it. Modify it. Optimize it. Pretend you would have written it cleaner.
 
 [h2]Development Status[/h2]
 
-[b]Version 0.41 - Current Release[/b]
+[b]Version 0.42 - Current Release[/b]
 
-Implement auxiliary bone handling and air state adjustments in IK system
+[h2]What's New in 0.42[/h2]
+
+[list]
+[*]Fixed foot levitation when holding weapons (physgun, fists, any holdtype that raises foot bones). Traces now always start from player origin, not animated bone position.
+[*]Removed erroneous trace excess subtraction that was zeroing required body drop when weapon animations elevated foot bones.
+[*]Fixed auto model detection not firing on first playermodel load.
+[*]Fixed leg measurement race condition on first frame (bad bone positions before SetupBones runs).
+[*]Fixed double-include bug where both autorun files were re-initializing runtime tables independently.
+[*]Fixed foot sinking on curbs/edges — contact now clusters around the highest valid sample instead of averaging all including air-side samples.
+[*]Body lean now uses Bip01_Spine1 instead of the world root bone. It now visually works.
+[*]Fixed lean calculation including pitch component. Now uses pitch-zeroed right vector with explicit XY dot.
+[*]Fixed auto-detect suggested values (leg_length, max_body_drop, traceStartRef, ground_distance were all wrong).
+[*]Raised ground_distance default from 45 to 70.
+[/list]
 
 [h2]Troubleshooting (when it inevitably breaks)[/h2]
 

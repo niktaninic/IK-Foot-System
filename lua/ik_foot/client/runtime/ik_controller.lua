@@ -83,6 +83,11 @@ function Controller.Calculate(ply, skeleton)
 	local releaseSpeed    = RT.GetIKParam(ply, "release_speed")
 	local maxBodyDropCVar = RT.GetIKParam(ply, "max_body_drop")
 	local soleOffset      = RT.GetIKParam(ply, "sole_offset")
+	local stepMinHeight   = RT.GetIKParam(ply, "stair_step_min_height")
+	local stepMaxHeight   = RT.GetIKParam(ply, "stair_step_max_height")
+	local stepWindow      = RT.GetIKParam(ply, "stair_sequence_window")
+	local stairReleaseMul = RT.GetIKParam(ply, "stair_release_multiplier")
+	local stairStepMul    = RT.GetIKParam(ply, "stair_adaptive_maxstep")
 	local leanEnabled     = RT.GetIKParamBool(ply, "lean_enabled")
 	local stabilizeIdle   = RT.GetIKParamBool(ply, "stabilize_idle")
 	local antiClip        = RT.GetIKParamBool(ply, "anti_clip")
@@ -108,21 +113,107 @@ function Controller.Calculate(ply, skeleton)
 	local isCrouching = ply:Crouching()
 	local crouch = RT.State.UpdateCrouch(state, isCrouching)
 
-	local lSamples = RT.Ground.SampleFoot(ply, skeleton.left.footPos, skeleton.left.footAng, traceStartZ, groundDist, true)
-	local rSamples = RT.Ground.SampleFoot(ply, skeleton.right.footPos, skeleton.right.footAng, traceStartZ, groundDist, false)
-	local lContact = RT.Ground.ResolveContact(lSamples, skeleton.left.footPos, vector_up)
-	local rContact = RT.Ground.ResolveContact(rSamples, skeleton.right.footPos, vector_up)
+	local lFoot = state.legs.left
+	local rFoot = state.legs.right
+
+	-- === PROCEDURAL STEPPER ===
+	-- uses prev frame's stair state to compute geometry-aware foot positions BEFORE tracing.
+	-- this lets sampling happen at the right place instead of where the animation put the foot.
+	local prevStairMode = state.stairs and state.stairs.mode or false
+	local prevStairConf = state.stairs and state.stairs.confidence or 0
+	local lUsePos = skeleton.left.footPos
+	local rUsePos = skeleton.right.footPos
+
+	if onGround and not crouch.inTransition then
+		local prevEventH = math.max((state.stairs and state.stairs.eventHeight or 0) * modelScale, 4)
+		local strideLen = math.Clamp(prevEventH * 1.5, legLength * 0.35, legLength * 0.65)
+		local liftH = math.max(prevEventH * 0.65, 4 * modelScale)
+
+		-- movement direction: use velocity or fallback to player facing
+		local moveDir
+		if vel2D >= 5 then
+			moveDir = Vector(vel.x / vel2D, vel.y / vel2D, 0)
+		else
+			moveDir = ply:GetAngles():Forward()
+			moveDir.z = 0
+			moveDir:Normalize()
+			if moveDir:LengthSqr() < 0.1 then moveDir = Vector(1, 0, 0) end
+		end
+
+		-- right-of-movement vector (for lateral foot offset)
+		-- cross(moveDir, up) gives right side in GMod coordinate space
+		local rightDir = Vector(moveDir.y, -moveDir.x, 0)
+		local halfWidth = math.max(legLength * 0.1, 3)
+		local playerGroundPos = ply:GetPos()
+		local upClear = prevEventH * 2 + 8
+
+		-- predict where each foot should land on the next stair tread
+		local lBase = Vector(playerGroundPos.x - rightDir.x * halfWidth, playerGroundPos.y - rightDir.y * halfWidth, playerGroundPos.z)
+		local rBase = Vector(playerGroundPos.x + rightDir.x * halfWidth, playerGroundPos.y + rightDir.y * halfWidth, playerGroundPos.z)
+		local lTarget = RT.Ground.PredictLanding(ply, lBase, moveDir, strideLen * 0.9, upClear, groundDist)
+		local rTarget = RT.Ground.PredictLanding(ply, rBase, moveDir, strideLen * 0.9, upClear, groundDist)
+
+		local stepData = {
+			stairMode = prevStairMode and prevStairConf >= 0.4,
+			stairConfidence = prevStairConf,
+			playerPos = playerGroundPos,
+			moveDir = moveDir,
+			strideLen = strideLen,
+			liftHeight = liftH,
+			vel2D = vel2D,
+			dt = math.Clamp(FrameTime(), 1 / 300, 1 / 20),
+		}
+		local lProc = RT.State.UpdateStepperFoot(lFoot, rFoot, {
+			stairMode = stepData.stairMode, stairConfidence = stepData.stairConfidence,
+			playerPos = stepData.playerPos, moveDir = stepData.moveDir,
+			strideLen = stepData.strideLen, liftHeight = stepData.liftHeight,
+			vel2D = stepData.vel2D, dt = stepData.dt,
+			currentLock = lFoot.lockPos, rawFootPos = skeleton.left.footPos, swingTarget = lTarget,
+		})
+		local rProc = RT.State.UpdateStepperFoot(rFoot, lFoot, {
+			stairMode = stepData.stairMode, stairConfidence = stepData.stairConfidence,
+			playerPos = stepData.playerPos, moveDir = stepData.moveDir,
+			strideLen = stepData.strideLen, liftHeight = stepData.liftHeight,
+			vel2D = stepData.vel2D, dt = stepData.dt,
+			currentLock = rFoot.lockPos, rawFootPos = skeleton.right.footPos, swingTarget = rTarget,
+		})
+
+		if lProc then lUsePos = lProc end
+		if rProc then rUsePos = rProc end
+	else
+		-- fade out proc when airborne or in crouch transition
+		if lFoot.proc and (lFoot.proc.blendT or 0) > 0 then
+			local lProc = RT.State.UpdateStepperFoot(lFoot, rFoot, {
+				stairMode = false, dt = math.Clamp(FrameTime(), 1 / 300, 1 / 20),
+				rawFootPos = skeleton.left.footPos, currentLock = lFoot.lockPos,
+				playerPos = ply:GetPos(), moveDir = Vector(1,0,0), strideLen = 20, liftHeight = 8, vel2D = 0,
+			})
+			if lProc then lUsePos = lProc end
+		end
+		if rFoot.proc and (rFoot.proc.blendT or 0) > 0 then
+			local rProc = RT.State.UpdateStepperFoot(rFoot, lFoot, {
+				stairMode = false, dt = math.Clamp(FrameTime(), 1 / 300, 1 / 20),
+				rawFootPos = skeleton.right.footPos, currentLock = rFoot.lockPos,
+				playerPos = ply:GetPos(), moveDir = Vector(1,0,0), strideLen = 20, liftHeight = 8, vel2D = 0,
+			})
+			if rProc then rUsePos = rProc end
+		end
+	end
+
+	local lSamples = RT.Ground.SampleFoot(ply, lUsePos, skeleton.left.footAng, traceStartZ, groundDist, true)
+	local rSamples = RT.Ground.SampleFoot(ply, rUsePos, skeleton.right.footAng, traceStartZ, groundDist, false)
+	local lContact = RT.Ground.ResolveContact(lSamples, lUsePos, vector_up)
+	local rContact = RT.Ground.ResolveContact(rSamples, rUsePos, vector_up)
+	local terrainHint = RT.Ground.BuildTerrainHint(lContact, rContact, legLength)
 
 	-- validate contacts. always runs for debug but only corrects with anticlip on
-	local lValidation = RT.Ground.ValidateContact(lContact, lSamples, skeleton.left.footPos.z, soleOffset)
-	local rValidation = RT.Ground.ValidateContact(rContact, rSamples, skeleton.right.footPos.z, soleOffset)
+	local lValidation = RT.Ground.ValidateContact(lContact, lSamples, lUsePos.z, soleOffset)
+	local rValidation = RT.Ground.ValidateContact(rContact, rSamples, rUsePos.z, soleOffset)
 
-	local idle = RT.State.UpdateIdle(state, onGround and stabilizeIdle, vel2D, velZ, idleVelThresh, skeleton.left.footPos, skeleton.right.footPos)
-	local lFoot, rFoot = state.legs.left, state.legs.right
-	local lSpeed = RT.State.MeasureFootSpeed(lFoot, skeleton.left.footPos, dt)
-	local rSpeed = RT.State.MeasureFootSpeed(rFoot, skeleton.right.footPos, dt)
+	local idle = RT.State.UpdateIdle(state, onGround and stabilizeIdle, vel2D, velZ, idleVelThresh, lUsePos, rUsePos)
+	local lSpeed = RT.State.MeasureFootSpeed(lFoot, lUsePos, dt)
+	local rSpeed = RT.State.MeasureFootSpeed(rFoot, rUsePos, dt)
 
-	-- anti-clip hack. if foot is inside ground dont lock it there
 	if antiClip then
 		if not lValidation.isValid and lValidation.invalidReason == "penetrating" then
 			lFoot.planted = false
@@ -136,12 +227,29 @@ function Controller.Calculate(ply, skeleton)
 
 	local support = DetermineSupportSide(lContact, rContact, lFoot, rFoot)
 	local effectiveOnGround = onGround and not crouch.inTransition
+
+	-- when a foot is mid-swing in the proc stepper, tell the lock system the ground is gone.
+	-- this prevents the lock from acquiring at the arc midpoint and snapping back weirdly.
+	local lProcSwinging = lFoot.proc and lFoot.proc.phase == "swinging"
+	local rProcSwinging = rFoot.proc and rFoot.proc.phase == "swinging"
+	local function ProcContact(c)
+		return { hasHit = false, position = c.position, normal = c.normal,
+			supportDistance = c.supportDistance, hitCount = 0, samples = c.samples,
+			surfaceType = c.surfaceType, surfaceStable = c.surfaceStable,
+			surfaceEntity = c.surfaceEntity, surfaceFromWorld = c.surfaceFromWorld }
+	end
+	local lContactForState = lProcSwinging and ProcContact(lContact) or lContact
+	local rContactForState = rProcSwinging and ProcContact(rContact) or rContact
+
 	local footData = function(contact, rawPos, speed, side)
 		return { onGround = effectiveOnGround, idleActive = idle.active and not crouch.inTransition, isSupportFoot = support == side,
-			contact = contact, rawFootPos = rawPos, footSpeed = speed, lockStrength = lockStrength, releaseSpeed = releaseSpeed }
+			contact = contact, rawFootPos = rawPos, footSpeed = speed, lockStrength = lockStrength, releaseSpeed = releaseSpeed,
+			stairMode = state.stairs and state.stairs.mode or false,
+			stairConfidence = state.stairs and state.stairs.confidence or 0,
+			stairReleaseMultiplier = stairReleaseMul }
 	end
-	local lResult = RT.State.UpdateFoot(lFoot, footData(lContact, skeleton.left.footPos, lSpeed, "left"))
-	local rResult = RT.State.UpdateFoot(rFoot, footData(rContact, skeleton.right.footPos, rSpeed, "right"))
+	local lResult = RT.State.UpdateFoot(lFoot, footData(lContactForState, lUsePos, lSpeed, "left"))
+	local rResult = RT.State.UpdateFoot(rFoot, footData(rContactForState, rUsePos, rSpeed, "right"))
 
 	local bodyDrop, lReqDrop, rReqDrop = 0, 0, 0
 	local lKnee, rKnee = 0, 0
@@ -154,6 +262,20 @@ function Controller.Calculate(ply, skeleton)
 		local rDist = rContact.hasHit and rContact.supportDistance or traceStartOff
 		lReqDrop = math.max(lDist - traceStartOff, 0)
 		rReqDrop = math.max(rDist - traceStartOff, 0)
+
+		-- anti-clip body-drop correction: if samples say foot is inside geometry,
+		-- override reqDrop using the highest valid (non-penetrating) contact Z.
+		-- without this, bodyDrop still tries to push the foot deeper underground.
+		if antiClip then
+			if not lValidation.isValid and lValidation.invalidReason == "penetrating"
+				and lValidation.highestValidZ > -math.huge then
+				lReqDrop = math.max(traceStartZ - lValidation.highestValidZ - traceStartOff, 0)
+			end
+			if not rValidation.isValid and rValidation.invalidReason == "penetrating"
+				and rValidation.highestValidZ > -math.huge then
+				rReqDrop = math.max(traceStartZ - rValidation.highestValidZ - traceStartOff, 0)
+			end
+		end
 
 		-- dynamic sole. if feet keep clipping through ground this slowly pushes them up
 		if dynamicSole then
@@ -177,10 +299,41 @@ function Controller.Calculate(ply, skeleton)
 		end
 
 
-		local lTraceExcess = math.max(skeleton.left.footPos.z + 8 - traceStartZ, 0)
-		local rTraceExcess = math.max(skeleton.right.footPos.z + 8 - traceStartZ, 0)
-		lReqDrop = math.max(lReqDrop - lTraceExcess, 0)
-		rReqDrop = math.max(rReqDrop - rTraceExcess, 0)
+		local stairsState = state.stairs or {}
+		local prevLReq = stairsState.prevLeftReq or lReqDrop
+		local prevRReq = stairsState.prevRightReq or rReqDrop
+		local leftRise = math.max(lReqDrop - prevLReq, 0)
+		local rightRise = math.max(rReqDrop - prevRReq, 0)
+		local leftDrop = math.max(prevLReq - lReqDrop, 0)
+		local rightDrop = math.max(prevRReq - rReqDrop, 0)
+
+		local maxRise = math.max(leftRise, rightRise)
+		local maxDrop = math.max(leftDrop, rightDrop)
+		local stairAsymmetry = math.abs(lReqDrop - rReqDrop)
+		local clampedMinStep = math.max(stepMinHeight * modelScale, 2)
+		local clampedMaxStep = math.max(stepMaxHeight * modelScale, clampedMinStep + 2)
+		local stairRangeEvent = math.max(maxRise, maxDrop)
+		local stairHeightInRange = (stairRangeEvent >= clampedMinStep and stairRangeEvent <= clampedMaxStep)
+			or (stairAsymmetry >= clampedMinStep * 0.8 and stairAsymmetry <= clampedMaxStep * 1.9)
+		local movementEligible = vel2D >= math.max(idleVelThresh * 0.7, 2) and math.abs(velZ) <= 140
+		local stairSignalStrong = terrainHint.edgeConfidence >= 0.2 or stairAsymmetry >= clampedMinStep
+		local stairEligible = movementEligible and stairHeightInRange and terrainHint.stable and stairSignalStrong
+
+		local stairRuntime = RT.State.UpdateStairSequence(state, {
+			leftRise = leftRise,
+			rightRise = rightRise,
+			leftDrop = leftDrop,
+			rightDrop = rightDrop,
+			heightDiff = stairAsymmetry,
+			stepMax = clampedMaxStep,
+			edgeConfidence = terrainHint.edgeConfidence,
+			surfaceStable = terrainHint.stable,
+			sequenceWindow = stepWindow,
+			eligible = stairEligible,
+		})
+
+		state.stairs.prevLeftReq = lReqDrop
+		state.stairs.prevRightReq = rReqDrop
 
 		-- figure out body drop. too little = floating. too much = underground. fun times
 		local avgDrop = (lReqDrop + rReqDrop) * 0.5
@@ -200,11 +353,23 @@ function Controller.Calculate(ply, skeleton)
 		local unevenFactor = math.Clamp(heightDiff / 10, 0, 1)
 		local terrainNeed = math.Clamp(maxDrop / math.max(extraDrop * 0.5, 0.3), 0, 1)
 		local desiredDrop = reqDrop + Lerp(unevenFactor, extraDrop, extraDropUneven) * terrainNeed + heightDiff * unevenDropScale * 0.2
+		if stairRuntime.mode then
+			local stepBias = math.Clamp(stairRuntime.eventHeight / math.max(clampedMaxStep, 1), 0, 1)
+			desiredDrop = desiredDrop + stairRuntime.eventHeight * 0.1 * stepBias
+			desiredDrop = desiredDrop - stairRuntime.downHeight * 0.06
+		end
 		local dropCap = math.min(groundDist * 0.95, legLength * 0.95, maxBodyDropCVar)
 		desiredDrop = math.Clamp(desiredDrop, 0, math.max(dropCap, 2))
 
 		if state.bodyDrop then
 			local maxStep = math.max(10 * dt * 60, 1.5)
+			if stairRuntime.mode then
+				local adaptiveBoost = stairRuntime.eventHeight * math.Clamp(stairStepMul, 0.25, 2)
+				maxStep = maxStep + math.Clamp(adaptiveBoost * 0.55, 0, 24)
+				if stairRuntime.downHeight > stairRuntime.upHeight then
+					maxStep = maxStep * 0.82
+				end
+			end
 			if crouch.inTransition then
 				maxStep = maxStep * 0.35
 				-- ease in during crouch or it looks janky
@@ -216,7 +381,8 @@ function Controller.Calculate(ply, skeleton)
 		state.bodyDrop = desiredDrop
 		bodyDrop = desiredDrop
 
-		-- knee bend via asin. should be simple but nothing here ever is
+		-- knee bend via asin. kneeRange treats each link as half the leg length.
+		-- bendBoost compensates for the small-angle approximation at larger bends.
 		lKnee = math.deg(math.asin(math.Clamp((bodyDrop - lReqDrop) / kneeRange, -1, 1)))
 		rKnee = math.deg(math.asin(math.Clamp((bodyDrop - rReqDrop) / kneeRange, -1, 1)))
 		if lKnee > 0 then lKnee = lKnee * bendBoost end
@@ -241,7 +407,8 @@ function Controller.Calculate(ply, skeleton)
 
 			local maxCorr = math.max(penetrationCorrL, penetrationCorrR)
 			if maxCorr > 0.5 then
-				bodyDrop = math.max(bodyDrop - maxCorr * 0.6, 0)
+				local stairCorrBoost = state.stairs and state.stairs.mode and (1 + (state.stairs.confidence or 0) * 0.35) or 1
+				bodyDrop = math.max(bodyDrop - maxCorr * 0.6 * stairCorrBoost, 0)
 				state.bodyDrop = bodyDrop
 
 				lKnee = math.deg(math.asin(math.Clamp((bodyDrop - lReqDrop) / kneeRange, -1, 1)))
@@ -256,6 +423,10 @@ function Controller.Calculate(ply, skeleton)
 		lFootRot = ComputeFootRotation(lContact.samples, footRotScale)
 		rFootRot = ComputeFootRotation(rContact.samples, footRotScale)
 	else
+		if state.stairs then
+			state.stairs.mode = false
+			state.stairs.confidence = 0
+		end
 		local airBlend = math.Clamp(math.abs(velZ) / 260, 0, 1)
 		local moveBlend = math.Clamp(vel2D / 160, 0, 1)
 		local airCycle = CurTime() * (AIR_SWING_SPEED + moveBlend * 3)
@@ -290,14 +461,21 @@ function Controller.Calculate(ply, skeleton)
 	if rKnee ~= rKnee then rKnee = 0 end
 
 	local baseAng = Angle()
+	local leanAng = Angle()
 	if leanEnabled then
-		local lateral = vel:Dot(ply:GetAngles():Right())
-		baseAng = Angle(0, 0, -math.Clamp(lateral / 16, -7, 7))
+		-- zero pitch before taking Right() so looking up/down doesn't skew the lateral axis
+		local bodyAng = ply:GetAngles()
+		bodyAng.p = 0
+		local right = bodyAng:Right()
+		-- explicit XY dot to ignore any residual Z component
+		local lateral = vel.x * right.x + vel.y * right.y
+		leanAng = Angle(0, 0, -math.Clamp(lateral / 8, -10, 10))
 	end
 
 	return {
 		basePos = Vector(0, 0, -bodyDrop),
 		baseAng = baseAng,
+		leanAng = leanAng,
 		bodyDrop = bodyDrop,
 		lRequiredDrop = lReqDrop,
 		rRequiredDrop = rReqDrop,
@@ -318,20 +496,34 @@ function Controller.Calculate(ply, skeleton)
 			lHitCount = lContact.hitCount, rHitCount = rContact.hitCount,
 			leftPlanted = lResult.planted, rightPlanted = rResult.planted,
 			leftReleased = lResult.released, rightReleased = rResult.released,
-			leftLockDist = lResult.lockPos and skeleton.left.footPos:Distance(lResult.lockPos) or -1,
-			rightLockDist = rResult.lockPos and skeleton.right.footPos:Distance(rResult.lockPos) or -1,
-			leftGap = skeleton.left.footPos:Distance(lContact.position),
-			rightGap = skeleton.right.footPos:Distance(rContact.position),
+			leftLockDist = lResult.lockPos and lUsePos:Distance(lResult.lockPos) or -1,
+			rightLockDist = rResult.lockPos and rUsePos:Distance(rResult.lockPos) or -1,
+			leftGap = lUsePos:Distance(lContact.position),
+			rightGap = rUsePos:Distance(rContact.position),
 			idleActive = idle.active, idleCandidateTime = idle.candidateTime or 0,
 			supportSide = support, leftFootSpeed = lSpeed, rightFootSpeed = rSpeed,
 			modelScale = modelScale, measuredLeg = skeleton.measuredLegLength or REFERENCE_LEG_LENGTH,
 			dynSoleCorr = dynSoleCorr,
+			terrainSurface = terrainHint and terrainHint.surfaceType or "none",
+			terrainStable = terrainHint and terrainHint.stable or false,
+			stairMode = state.stairs and state.stairs.mode or false,
+			stairConfidence = state.stairs and state.stairs.confidence or 0,
+			stairSequence = state.stairs and state.stairs.sequence or 0,
+			stairUpHeight = state.stairs and state.stairs.upHeight or 0,
+			stairDownHeight = state.stairs and state.stairs.downHeight or 0,
+			stairEventHeight = state.stairs and state.stairs.eventHeight or 0,
 			penetrationCorrL = penetrationCorrL,
 			penetrationCorrR = penetrationCorrR,
 			lPenetrationCount = lValidation.penetrationCount,
 			rPenetrationCount = rValidation.penetrationCount,
 			lNormalVariance = lValidation.normalVariance,
 			rNormalVariance = rValidation.normalVariance,
+			lProcPhase = lFoot.proc and lFoot.proc.phase or "off",
+			rProcPhase = rFoot.proc and rFoot.proc.phase or "off",
+			lProcBlend = lFoot.proc and (lFoot.proc.blendT or 0) or 0,
+			rProcBlend = rFoot.proc and (rFoot.proc.blendT or 0) or 0,
+			lProcSwingT = lFoot.proc and (lFoot.proc.swingT or 0) or 0,
+			rProcSwingT = rFoot.proc and (rFoot.proc.swingT or 0) or 0,
 		},
 	}
 end
@@ -419,6 +611,10 @@ function Controller.DrawDebug(ply, result)
 			string.format("FOOT SPD L/R: %.1f / %.1f", d.leftFootSpeed or 0, d.rightFootSpeed or 0),
 			string.format("SUPPORT: %s  IDLE: %s (%.2f)", string.upper(d.supportSide or "none"), d.idleActive and "ON" or "OFF", d.idleCandidateTime or 0),
 			string.format("MODEL SCALE: %.2f  LEG: %.1f", d.modelScale or 1, d.measuredLeg or 0),
+			string.format("TERRAIN: %s  STABLE: %s", tostring(d.terrainSurface or "none"), d.terrainStable and "Y" or "N"),
+			string.format("STAIRS: %s  CONF: %.2f  SEQ: %.2f  UP/DOWN: %.1f/%.1f  EVT: %.1f", d.stairMode and "ON" or "OFF", d.stairConfidence or 0, d.stairSequence or 0, d.stairUpHeight or 0, d.stairDownHeight or 0, d.stairEventHeight or 0),
+			string.format("PROC L: %s(%.0f%%)  R: %s(%.0f%%)", d.lProcPhase or "off", (d.lProcBlend or 0) * 100, d.rProcPhase or "off", (d.rProcBlend or 0) * 100),
+			string.format("SWING T L/R: %.2f / %.2f", d.lProcSwingT or 0, d.rProcSwingT or 0),
 			string.format("DYN SOLE: %.2f  PEN L/R: %d/%d", d.dynSoleCorr or 0, d.lPenetrationCount or 0, d.rPenetrationCount or 0),
 			string.format("PEN CORR L/R: %.1f/%.1f  NVAR: %.2f/%.2f", d.penetrationCorrL or 0, d.penetrationCorrR or 0, d.lNormalVariance or 0, d.rNormalVariance or 0),
 		}

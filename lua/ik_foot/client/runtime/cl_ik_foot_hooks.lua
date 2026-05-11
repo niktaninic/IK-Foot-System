@@ -2,6 +2,7 @@ if SERVER then return end
 if not IKFoot or not IKFoot.Runtime then return end
 
 local RT = IKFoot.Runtime
+local RESET_COOLDOWN = 0.5
 
 hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 	-- the main ik hook. runs every frame for every player. no pressure
@@ -41,10 +42,9 @@ hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 	if ply == LocalPlayer() then
 		local currentModel = ply:GetModel()
 		if ply.IKLastKnownModel ~= currentModel then
-			local hadPrevModel = ply.IKLastKnownModel ~= nil
 			ply.IKLastKnownModel = currentModel
 			IKFoot.InvalidateModelCache(currentModel)
-			if hadPrevModel and RT.GetIKParamBool(ply, "auto_model_detect") then
+			if RT.GetIKParamBool(ply, "auto_model_detect") then
 				timer.Simple(0.15, function()
 					if IsValid(ply) then
 						IKFoot.AutoApplyModelSettings(ply)
@@ -71,8 +71,18 @@ hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 	if not ok then
 		-- ik pipeline exploded. if it keeps failing we give up and reset
 		ply.IKFailCount = (ply.IKFailCount or 0) + 1
-		if ply.IKFailCount > 10 then
-			RT.Apply.ResetPlayer(ply, bones)
+		if ply.IKFailCount >= 5 and ply.IKFailCount < 10 then
+			RT.State.SoftRecover(ply)
+		elseif ply.IKFailCount >= 10 and ply.IKFailCount < 15 then
+			if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
+				RT.Apply.ResetPlayer(ply, bones)
+				ply.IKLastResetTime = CurTime()
+			end
+		elseif ply.IKFailCount >= 15 then
+			if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
+				RT.Apply.HardResetPlayer(ply)
+				ply.IKLastResetTime = CurTime()
+			end
 			ply.IKFailCount = 0
 		end
 		return
@@ -82,8 +92,13 @@ hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 	if not result then
 		-- skeleton came back empty. probably loading or something idk
 		ply.IKFailCount = (ply.IKFailCount or 0) + 1
-		if ply.IKFailCount > 15 then
-			RT.Apply.ResetPlayer(ply, bones)
+		if ply.IKFailCount >= 6 and ply.IKFailCount < 12 then
+			RT.State.SoftRecover(ply)
+		elseif ply.IKFailCount >= 12 then
+			if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
+				RT.Apply.ResetPlayer(ply, bones)
+				ply.IKLastResetTime = CurTime()
+			end
 			ply.IKFailCount = 0
 		end
 		return

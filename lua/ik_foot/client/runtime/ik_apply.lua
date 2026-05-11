@@ -80,7 +80,7 @@ local function SpringAngle(current, velocity, target, smoothTime, dt)
 	return Angle(p, y, r), Angle(pv, yv, rv)
 end
 
-local SPRING_FIELDS = {"leftThigh", "leftCalf", "leftFoot", "rightThigh", "rightCalf", "rightFoot"}
+local SPRING_FIELDS = {"leftThigh", "leftCalf", "leftFoot", "rightThigh", "rightCalf", "rightFoot", "lean"}
 
 local function EnsureApplyState(ply)
 	if not ply.IKApplyState then
@@ -128,7 +128,7 @@ function Apply.StripIKFromBones(ply, bones)
 		end
 	end
 
-	local allBones = {0, bones.lThigh, bones.rThigh, bones.lCalf, bones.rCalf, bones.lFoot, bones.rFoot}
+	local allBones = {0, bones.lThigh, bones.rThigh, bones.lCalf, bones.rCalf, bones.lFoot, bones.rFoot, bones.leanBone}
 	for _, bone in ipairs(allBones) do
 		if bone then
 			local angEntry = blendState.ang[bone]
@@ -155,12 +155,17 @@ function Apply.BuildSkeleton(ply, bones)
 		return nil
 	end
 
-	-- measure leg length from actual bones. cached so we dont do this every frame
+	-- measure leg length from actual bones. cached so we dont do this every frame.
+	-- only cache if the measurement looks sane (> 20 units). on first frame bones can
+	-- return bad positions if SetupBones hasn't run yet, which would cache garbage forever.
 	if ply.IKMeasuredModel ~= (bones and bones.model) then
 		local lLen = lThighPos:Distance(lCalfPos) + lCalfPos:Distance(lFootPos)
 		local rLen = rThighPos:Distance(rCalfPos) + rCalfPos:Distance(rFootPos)
-		ply.IKMeasuredLegLength = math.max((lLen + rLen) * 0.5, 10)
-		ply.IKMeasuredModel = bones and bones.model
+		local measured = (lLen + rLen) * 0.5
+		if measured > 20 then
+			ply.IKMeasuredLegLength = measured
+			ply.IKMeasuredModel = bones and bones.model
+		end
 	end
 
 	return {
@@ -204,6 +209,7 @@ function Apply.ResetPlayer(ply, bones)
 	if bones.rThigh then RT.ApplyBlendedBoneAngles(ply, bones.rThigh, Angle()) end
 	if bones.lFoot then RT.ApplyBlendedBoneAngles(ply, bones.lFoot, Angle()) end
 	if bones.rFoot then RT.ApplyBlendedBoneAngles(ply, bones.rFoot, Angle()) end
+	if bones.leanBone then RT.ApplyBlendedBoneAngles(ply, bones.leanBone, Angle()) end
 
 	ply.IKApplyState = nil
 	RT.State.Reset(ply)
@@ -216,6 +222,7 @@ function Apply.HardResetPlayer(ply)
 
 	-- bypass blend layer and zero everything. nuclear option
 	local allBones = {0, bones.lThigh, bones.rThigh, bones.lCalf, bones.rCalf, bones.lFoot, bones.rFoot}
+	if bones.leanBone then allBones[#allBones + 1] = bones.leanBone end
 	if bones.auxRoots then
 		for _, auxBone in ipairs(bones.auxRoots) do
 			allBones[#allBones + 1] = auxBone
@@ -258,6 +265,7 @@ function Apply.ApplyResult(ply, bones, result)
 	local targets = {
 		leftThigh = result.left.thigh, leftCalf = result.left.calf, leftFoot = result.left.foot,
 		rightThigh = result.right.thigh, rightCalf = result.right.calf, rightFoot = result.right.foot,
+		lean = result.leanAng or Angle(),
 	}
 
 	if hardIdle then
@@ -313,4 +321,7 @@ function Apply.ApplyResult(ply, bones, result)
 	RT.ApplyBlendedBoneAngles(ply, bones.rCalf, s.rightCalf)
 	RT.ApplyBlendedBoneAngles(ply, bones.lFoot, s.leftFoot)
 	RT.ApplyBlendedBoneAngles(ply, bones.rFoot, s.rightFoot)
+	if bones.leanBone then
+		RT.ApplyBlendedBoneAngles(ply, bones.leanBone, s.lean)
+	end
 end

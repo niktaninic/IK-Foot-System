@@ -17,9 +17,15 @@ if SERVER then
 end
 
 include("ik_foot/client/cl_ik_foot_sync.lua")
-include("ik_foot/client/runtime/cl_ik_foot_context.lua")
-include("ik_foot/client/runtime/ik_ground.lua")
-include("ik_foot/client/runtime/ik_state.lua")
-include("ik_foot/client/runtime/ik_controller.lua")
-include("ik_foot/client/runtime/ik_apply.lua")
-include("ik_foot/client/runtime/cl_ik_foot_hooks.lua")
+
+-- ik_foot.lua (also in autorun/) may have already loaded the runtime.
+-- only include if it didn't to prevent local state tables from being wiped.
+if not (IKFoot and IKFoot._runtimeLoaded) then
+	include("ik_foot/client/runtime/cl_ik_foot_context.lua")
+	include("ik_foot/client/runtime/ik_ground.lua")
+	include("ik_foot/client/runtime/ik_state.lua")
+	include("ik_foot/client/runtime/ik_controller.lua")
+	include("ik_foot/client/runtime/ik_apply.lua")
+	include("ik_foot/client/runtime/cl_ik_foot_hooks.lua")
+	IKFoot._runtimeLoaded = true
+end

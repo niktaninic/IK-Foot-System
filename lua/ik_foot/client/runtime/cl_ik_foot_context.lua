@@ -202,6 +202,9 @@ function RT.GetIKBones(ply)
 		rCalf  = ply:LookupBone("ValveBiped.Bip01_R_Calf"),
 		lThigh = ply:LookupBone("ValveBiped.Bip01_L_Thigh"),
 		rThigh = ply:LookupBone("ValveBiped.Bip01_R_Thigh"),
+		-- Spine1 preferred; falls back to Spine if the model only has the lower spine bone.
+		-- Roll on bone 0 (Bip01) has no visible effect since it's the world-reference root.
+		leanBone = ply:LookupBone("ValveBiped.Bip01_Spine1") or ply:LookupBone("ValveBiped.Bip01_Spine"),
 		auxRoots = RT.FindAuxRootBones(ply, model),
 		baseBoneCount = GetBaseBoneCount(model),
 	}
@@ -399,17 +402,18 @@ function IKFoot.MeasureModel(ply)
 	local extraBodyDrop = math.Round(math.max(0.3, 0.3 + meshGapRef), 1)
 	local extraDropUneven = math.Round(math.max(1.2, 1.2 + meshGapRef), 1)
 
-	local traceStartRef = math.Clamp(math.Round(thighHeight * 0.85 / scale, 0), 20, 40)
+	-- thighHeight is already in world units; don't divide by scale again or
+	-- the offset stays constant regardless of model size
+	local traceStartRef = math.Clamp(math.Round(thighHeight * 0.85, 0), 20, 40)
 
 	local suggested = {
-		leg_length             = refLeg,
+		leg_length             = math.Round(legLength, 0),
 		trace_start_offset     = traceStartRef,
-		ground_distance        = refLeg,
 		sole_offset            = math.Round(soleOffset, 2),
 		extra_body_drop        = extraBodyDrop,
 		extra_body_drop_uneven = extraDropUneven,
-		max_body_drop          = 42,
-		high_foot_bend_boost   = 1.35,
+		max_body_drop          = math.Round(math.Clamp(legLength * 0.95, 42, 80), 0),
+		high_foot_bend_boost   = 1.70,
 		foot_rotation_scale    = 0.15,
 	}
 
