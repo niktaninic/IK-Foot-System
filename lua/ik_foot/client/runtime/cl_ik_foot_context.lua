@@ -80,60 +80,40 @@ function RT.GetParams(ply)
 	return cache
 end
 
--- pac3 compat. if pac is loaded we use its bone api instead
--- without this pac and ik fight each other and everything breaks
+-- =====================================================================
+-- bone manipulation layer
+-- =====================================================================
+-- the ik only ever adds/removes its OWN contribution (a delta) on top of
+-- whatever else is on a bone, so other addons keep working.
+--
+-- pac3: while a player wears pac parts, pac.ManipulateBone* does not touch
+-- the entity, it only stores the value in ply.pac_boneanim. pac copies that
+-- to the entity in PreDrawOpaqueRenderables (pac.ResetBones) and then adds
+-- its bone parts on top. going through pac's api meant our "remove ik, read
+-- the animated pose" step removed nothing until the next frame, so the ik was
+-- computed on top of its own previous result (jittering feet, legs folding,
+-- rest height drifting under the floor). so now the delta is applied to the
+-- entity directly (effective right away) AND mirrored into pac_boneanim so
+-- pac's next reset rebuilds the same state.
 
 local function UsePAC()
-	return istable(pac) and pac.IsEnabled and pac.IsEnabled()
-		and isfunction(pac.ManipulateBonePosition) and isfunction(pac.ManipulateBoneAngles)
+	return istable(pac) and isfunction(pac.IsEnabled) and pac.IsEnabled()
 end
 
-function RT.SetBonePosition(ply, bone, pos)
-	if bone == nil then return end
-	if UsePAC() then
-		pac.ManipulateBonePosition(ply, bone, pos)
-	else
-		ply:ManipulateBonePosition(bone, pos)
+local function PacStore(ply)
+	if not UsePAC() then return nil end
+	local store = ply.pac_boneanim
+	if not store then
+		store = { positions = {}, angles = {} }
+		ply.pac_boneanim = store
 	end
+	store.positions = store.positions or {}
+	store.angles = store.angles or {}
+	return store
 end
 
-function RT.SetBoneAngles(ply, bone, ang)
-	if bone == nil then return end
-	if UsePAC() then
-		pac.ManipulateBoneAngles(ply, bone, ang)
-	else
-		ply:ManipulateBoneAngles(bone, ang)
-	end
-end
-
-function RT.GetCurrentBonePosition(ply, bone)
-	if bone == nil then return Vector() end
-	if UsePAC() and ply.pac_boneanim and ply.pac_boneanim.positions then
-		local pos = ply.pac_boneanim.positions[bone]
-		if pos then return Vector(pos) end
-	end
-	return Vector(ply:GetManipulateBonePosition(bone) or Vector())
-end
-
-function RT.GetCurrentBoneAngles(ply, bone)
-	if bone == nil then return Angle() end
-	if UsePAC() and ply.pac_boneanim and ply.pac_boneanim.angles then
-		local ang = ply.pac_boneanim.angles[bone]
-		if ang then return Angle(ang) end
-	end
-	return Angle(ply:GetManipulateBoneAngles(bone) or Angle())
-end
-
--- tracks what ik changed on each bone so we dont fight other addons
--- this took forever to get right
-
-function RT.GetIKBlendState(ply)
-	ply.IKBlendState = ply.IKBlendState or { pos = {}, ang = {} }
-	return ply.IKBlendState
-end
-
-local NEAR_EPS_VEC = 0.01
-local NEAR_EPS_ANG = 0.05
+local POS_EPS = 0.05
+local ANG_EPS = 0.1
 
 local function VecNear(a, b, eps)
 	return math.abs(a.x - b.x) <= eps
@@ -150,46 +130,77 @@ end
 RT.VecNear = VecNear
 RT.AngNear = AngNear
 
+function RT.GetIKBlendState(ply)
+	ply.IKBlendState = ply.IKBlendState or { pos = {}, ang = {} }
+	return ply.IKBlendState
+end
+
+-- is our last applied delta still part of the bone? if somebody overwrote
+-- the bone in the meantime it is not, and we must not subtract it again
+local function StillIncluded(entry, entValue, storeValue, near, eps)
+	if not entry then return false end
+	if entry.store and storeValue then
+		return near(storeValue, entry.store, eps)
+	end
+	return entry.ent ~= nil and near(entValue, entry.ent, eps)
+end
+
+-- makes our contribution on `bone` equal to `offset`
 function RT.ApplyBlendedBonePosition(ply, bone, offset)
-	if bone == nil then return end
+	if bone == nil or bone < 0 then return end
 	local state = RT.GetIKBlendState(ply)
 	local entry = state.pos[bone]
-	if not entry then
-		entry = { applied = Vector(), final = nil }
-		state.pos[bone] = entry
+	local store = PacStore(ply)
+	local current = ply:GetManipulateBonePosition(bone) or Vector()
+	local storeValue = store and store.positions[bone]
+
+	local applied = StillIncluded(entry, current, storeValue, VecNear, POS_EPS) and entry.applied or vector_origin
+	local delta = offset - applied
+
+	local newEnt = current + delta
+	ply:ManipulateBonePosition(bone, newEnt)
+	local newStore
+	if store then
+		newStore = (storeValue or vector_origin) + delta
+		store.positions[bone] = newStore
 	end
 
-	local current = RT.GetCurrentBonePosition(ply, bone)
-	local base = current
-	if entry.final and VecNear(current, entry.final, NEAR_EPS_VEC) then
-		base = current - entry.applied
-	end
-
-	local final = base + offset
-	RT.SetBonePosition(ply, bone, final)
-	entry.applied = Vector(offset)
-	entry.final = Vector(final)
+	state.pos[bone] = { applied = Vector(offset), ent = Vector(newEnt), store = newStore and Vector(newStore) or nil }
 end
 
 function RT.ApplyBlendedBoneAngles(ply, bone, offset)
-	if bone == nil then return end
+	if bone == nil or bone < 0 then return end
 	local state = RT.GetIKBlendState(ply)
 	local entry = state.ang[bone]
-	if not entry then
-		entry = { applied = Angle(), final = nil }
-		state.ang[bone] = entry
+	local store = PacStore(ply)
+	local current = ply:GetManipulateBoneAngles(bone) or Angle()
+	local storeValue = store and store.angles[bone]
+
+	local applied = StillIncluded(entry, current, storeValue, AngNear, ANG_EPS) and entry.applied or angle_zero
+	local dp, dy, dr = offset.p - applied.p, offset.y - applied.y, offset.r - applied.r
+
+	local newEnt = Angle(current.p + dp, current.y + dy, current.r + dr)
+	ply:ManipulateBoneAngles(bone, newEnt)
+	local newStore
+	if store then
+		local base = storeValue or angle_zero
+		newStore = Angle(base.p + dp, base.y + dy, base.r + dr)
+		store.angles[bone] = newStore
 	end
 
-	local current = RT.GetCurrentBoneAngles(ply, bone)
-	local base = current
-	if entry.final and AngNear(current, entry.final, NEAR_EPS_ANG) then
-		base = Angle(current.p - entry.applied.p, current.y - entry.applied.y, current.r - entry.applied.r)
-	end
+	state.ang[bone] = { applied = Angle(offset), ent = Angle(newEnt), store = newStore and Angle(newStore) or nil }
+end
 
-	local final = Angle(base.p + offset.p, base.y + offset.y, base.r + offset.r)
-	RT.SetBoneAngles(ply, bone, final)
-	entry.applied = Angle(offset)
-	entry.final = Angle(final)
+-- nuclear: zero the bone everywhere, ignoring the blend bookkeeping
+function RT.ZeroBone(ply, bone)
+	if bone == nil or bone < 0 then return end
+	ply:ManipulateBonePosition(bone, Vector())
+	ply:ManipulateBoneAngles(bone, Angle())
+	local store = ply.pac_boneanim
+	if istable(store) then
+		if store.positions then store.positions[bone] = nil end
+		if store.angles then store.angles[bone] = nil end
+	end
 end
 
 -- =====================================================================

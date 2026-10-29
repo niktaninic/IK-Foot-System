@@ -88,6 +88,10 @@ function Controller.Calculate(ply, sk, bones, P)
 	else
 		restH = state.restHeight or seed
 	end
+	-- an ankle can't physically sit under the floor or at knee height. keeps a
+	-- bad read (another addon moving bones behind our back) from poisoning it
+	restH = math.Clamp(restH, 0.3 * scale, 10 * scale)
+	state.restHeight = restH
 
 	local plantW = {}
 	for _, side in ipairs(SIDES) do

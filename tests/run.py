@@ -22,6 +22,7 @@ def run(test, setup=""):
 
 run("test_solver.lua")
 run("test_bones.lua")
+run("test_pac.lua")
 for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-1", "SPEED=200; DIR=-1",
               'SPEED=90; WORLD="flat"', 'SPEED=90; WORLD="curb"', 'SPEED=90; WORLD="ramp"', "SPEED=90; STOPAT=1.37"):
     print("---", setup)

@@ -5,9 +5,6 @@ local RT = IKFoot.Runtime
 RT.Apply = RT.Apply or {}
 local Apply = RT.Apply
 
-local STRIP_POS_EPS = 0.1
-local STRIP_ANG_EPS = 0.15
-
 local function IsFiniteNumber(value)
 	return isnumber(value) and value == value and value > -math.huge and value < math.huge
 end
@@ -49,35 +46,14 @@ local function PositionBones(bones)
 end
 
 function Apply.StripIKFromBones(ply, bones)
-	-- undo what ik did to the bones before reading the animated pose.
-	-- only strips values that are still exactly what we wrote, anything
-	-- another addon changed in between is left alone
-	local blendState = ply.IKBlendState
-	if not blendState or not bones then return end
-
+	-- remove our contribution before reading the animated pose. only what we
+	-- added is removed, other addons' / pac parts' offsets stay
+	if not ply.IKBlendState or not bones then return end
 	for _, bone in ipairs(PositionBones(bones)) do
-		local entry = blendState.pos[bone]
-		if entry and entry.final then
-			local current = RT.GetCurrentBonePosition(ply, bone)
-			if RT.VecNear(current, entry.final, STRIP_POS_EPS) then
-				RT.SetBonePosition(ply, bone, current - entry.applied)
-				entry.final = current - entry.applied
-				entry.applied = Vector()
-			end
-		end
+		RT.ApplyBlendedBonePosition(ply, bone, vector_origin)
 	end
-
 	for _, bone in ipairs(ManagedBones(bones)) do
-		local entry = bone and blendState.ang[bone]
-		if entry and entry.final then
-			local current = RT.GetCurrentBoneAngles(ply, bone)
-			if RT.AngNear(current, entry.final, STRIP_ANG_EPS) then
-				local base = Angle(current.p - entry.applied.p, current.y - entry.applied.y, current.r - entry.applied.r)
-				RT.SetBoneAngles(ply, bone, base)
-				entry.final = base
-				entry.applied = Angle()
-			end
-		end
+		RT.ApplyBlendedBoneAngles(ply, bone, angle_zero)
 	end
 end
 
@@ -148,14 +124,8 @@ function Apply.HardResetPlayer(ply)
 		end
 	end
 
-	local usePac = istable(pac) and isfunction(pac.ManipulateBonePosition) and isfunction(pac.ManipulateBoneAngles)
 	for _, bone in ipairs(list) do
-		ply:ManipulateBonePosition(bone, Vector())
-		ply:ManipulateBoneAngles(bone, Angle())
-		if usePac then
-			pcall(pac.ManipulateBonePosition, ply, bone, Vector())
-			pcall(pac.ManipulateBoneAngles, ply, bone, Angle())
-		end
+		RT.ZeroBone(ply, bone)
 	end
 
 	RT.State.HardReset(ply)
