@@ -77,4 +77,5 @@ local target = Vector(0, 0, -6)
 local minD = S.DropLimits(chain, target)
 local a = chain.thighPos:Distance(chain.calfPos) + chain.calfPos:Distance(chain.footPos)
 check("drop limit reach", math.abs((chain.thighPos.z - minD) - target.z - a * 0.999) < 0.01, minD)
+SOLVER_FAILS = fails
 print(string.format("trials done, worst fk error %.5f, fails %d", worst, fails))

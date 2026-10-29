@@ -67,3 +67,23 @@ isnumber = function(v) return type(v)=="number" end
 isbool = function(v) return type(v)=="boolean" end
 SERVER = false; CLIENT = true
 IKFoot = { Config = {}, Runtime = {} }
+
+-- more of the gmod api used by the runtime
+isfunction = function(f) return type(f) == "function" end
+istable = function(t) return type(t) == "table" end
+isstring = function(s) return type(s) == "string" end
+IsEntity = function(e) return type(e) == "table" and e.__isEntity == true end
+function SortedPairs(t)
+  local keys = {}
+  for k in pairs(t) do keys[#keys + 1] = k end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  local i = 0
+  return function() i = i + 1; local k = keys[i]; if k ~= nil then return k, t[k] end end
+end
+function MsgC(...) local parts = {} for _, v in ipairs({...}) do if type(v) == "string" then parts[#parts + 1] = v end end io.write(table.concat(parts)) end
+function ErrorNoHalt(s) io.write("ERR " .. tostring(s)) end
+
+function V:ToScreen() return { x = self.x, y = self.y, visible = true } end
+surface = setmetatable({ GetTextSize = function() return 100, 12 end }, { __index = function() return function() end end })
+draw = setmetatable({}, { __index = function() return function() end end })
+TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP, TEXT_ALIGN_CENTER = 0, 3, 1

@@ -12,7 +12,7 @@ local function H(x)
 end
 local function HMax(x0, x1) local m = -1e9 for x = x0, x1, 0.25 do m = math.max(m, H(x)) end return m end
 
-local now, frame, dt = 0, 0, 1/60
+local now, frame, dt = 0, 0, LOWFPS and 0.1 or 1/60
 function FrameTime() return dt end
 function RealTime() return now end
 function CurTime() return now end
@@ -46,6 +46,7 @@ local RT = IKFoot.Runtime
 RT.REFERENCE_LEG_LENGTH = 45
 RT.Colors = {}
 RT.GetSoleCorrection = function() return 0 end
+RT.GetExpectedRestHeight = function() return EXPECTED_REST end
 for _, f in ipairs({"ik_ground.lua", "ik_solver.lua", "ik_state.lua", "ik_controller.lua"}) do
   dofile(ROOT.."/lua/ik_foot/client/runtime/"..f)
 end
@@ -62,10 +63,11 @@ function ply:GetVelocity() return Vector(CURSPEED * DIR, 0, 0) end
 function ply:OnGround() return true end
 function ply:WaterLevel() return 0 end
 function ply:Crouching() return false end
-function ply:GetRenderAngles() return Angle(0, DIR > 0 and 0 or 180, 0) end
-function ply:GetAngles() return Angle(0, DIR > 0 and 0 or 180, 0) end
+local facingYaw = (DIR > 0 and 0 or 180) + (STRAFE and 90 or 0)
+function ply:GetRenderAngles() return Angle(0, facingYaw, 0) end
+function ply:GetAngles() return Angle(0, facingYaw, 0) end
 function ply:GetGroundEntity() return NULL end
-function ply:GetModelScale() return 1 end
+function ply:GetModelScale() return MODELSCALE or 1 end
 
 local function frameAng(dir, hinge)
   local x = dir:GetNormalized(); local z = (hinge - x*hinge:Dot(x)):GetNormalized(); local y = z:Cross(x)
@@ -80,9 +82,11 @@ local function skeleton(o, phase)
     local ph = phase + (i - 1) * math.pi
     local fx = math.sin(ph) * STRIDE * 0.5
     local lift = math.max(0, math.cos(ph)) * 4
+    if (CURSPEED or SPEED) == 0 then fx, lift = 0, 0 end -- standing: feet together, on the ground
     local y = (side == "left" and 4 or -4) * DIR
     local hip = o + Vector(0, y, 38)
-    local foot = o + Vector(fx * DIR, y, REST + lift)
+    local rest = (REST_DIP and now > 1.0 and now < 1.5) and 0.3 or REST
+    local foot = o + Vector(fx * DIR, y, rest + lift)
     -- place knee so both segments are 19.5 long and the knee points +x
     local d = foot - hip; local dl = d:Length(); local a = 19.5
     local mid = hip + d * 0.5
@@ -98,44 +102,120 @@ local function skeleton(o, phase)
   return { legLength = 39, left = legs.left, right = legs.right }
 end
 
--- shoes skinned to bones parented to the pelvis (not to the feet)
+-- shoes that do not inherit the foot: left one under a rotating pelvis
+-- ("body"), right one under the calf ("calf"). checked with an independent
+-- forward kinematics pass below, not with the controller's own formulas
+local FOLLOWER_KIND = FOLLOWER_KIND or "mixed"
 local bones = { profile = {}, auxRoots = {}, leanBone = nil, followers = {
-  { bone = 50, side = "left", parent = 0, shifted = true },
-  { bone = 51, side = "right", parent = 0, shifted = true },
+  { bone = 50, side = "left", parent = 0, kind = FOLLOWER_KIND == "calf" and "calf" or "body", name = "shoe_L" },
+  { bone = 51, side = "right", parent = 9, kind = FOLLOWER_KIND == "body" and "body" or "calf", name = "shoe_R" },
 } }
-local SHOE_OFFSET = Vector(1.5, 0, -2)
-local maxShoeErr = 0
+local SHOE_OFFSET = Vector(1.5, 0.3, -2)
+local SHOE_ROT = Angle(5, 10, -3)
+local maxShoeErr, maxShoeAngErr = 0, 0
+local M, mul, T, mv, toAng = MOCK.M, MOCK.mul, MOCK.T, MOCK.mv, MOCK.toAng
+local function angErr(a, b)
+  local fa, fb, ua, ub = a:Forward(), b:Forward(), a:Up(), b:Up()
+  return math.deg(math.acos(math.min(1, fa:Dot(fb)))) + math.deg(math.acos(math.min(1, ua:Dot(ub))))
+end
+-- engine-style fk of one leg with our manipulations: returns calf and foot world transforms
+local function LegFK(sk, res, side, drop)
+  local leg, out = sk[side], res[side]
+  local dz = Vector(0, 0, -drop)
+  local H = leg.thighPos + dz
+  local Rt, Rc, Rf = M(leg.thighAng), M(leg.calfAng), M(leg.footAng)
+  local Lc, Lf = mul(T(Rt), Rc), mul(T(Rc), Rf)
+  local pc, pf = mv(T(Rt), leg.calfPos - leg.thighPos), mv(T(Rc), leg.footPos - leg.calfPos)
+  local Rt2 = mul(Rt, M(out.thigh))
+  local K = H + mv(Rt2, pc)
+  local Rc2 = mul(mul(Rt2, Lc), M(out.calf))
+  local F = K + mv(Rc2, pf)
+  local Rf2 = mul(mul(Rc2, Lf), M(out.foot))
+  return K, Rc2, F, Rf2
+end
 local phase = 0
 local plants = { left = {}, right = {} }
 local lastPhase = { left = "planted", right = "planted" }
 local lastDrop, maxDropJump, maxPenetration, maxFloat = nil, 0, 0, 0
 local maxSkip = 0
 local maxAbsDropFlat, stairFrames = 0, 0
+local minRest, maxRest, restReasons = math.huge, -math.huge, {}
+local idleBothSwing, nanFrames, maxBehind, restepLoops = 0, 0, 0, 0
+local startLog = { left = {}, right = {} }
+local lastStartCount = { left = 0, right = 0 }
 local maxFootErr = 0
 for i = 1, 60 * 5 do
   now = now + dt; frame = frame + 1
   -- source movement: origin snaps to the highest ground under the 32x32 hull
-  CURSPEED = (STOPAT and now > STOPAT) and 0 or SPEED
+  CURSPEED = (STOPAT and now > STOPAT and not (RESUMEAT and now > RESUMEAT)) and 0 or SPEED
+  if TURN and STOPAT and now > STOPAT then facingYaw = facingYaw + 90 * dt end
+  if TELEPORT_AT and not TELEPORTED and now > TELEPORT_AT then ply.pos.x = ply.pos.x + 300; TELEPORTED = true end
   ply.pos.x = ply.pos.x + CURSPEED * dt * DIR
   ply.pos.z = HMax(ply.pos.x - 16, ply.pos.x + 16)
   if CURSPEED > 0 then phase = phase + dt * CURSPEED / STRIDE * math.pi else phase = math.floor(phase / math.pi + 0.5) * math.pi + math.pi * 0.5 end
   local sk = skeleton(ply:GetPos(), phase)
+  -- pelvis wobbles in the animation: yaw/roll change every frame
+  local pelvisAng = Angle(3 * math.sin(phase), (DIR > 0 and 0 or 180) + 15 * math.sin(phase * 0.5), 6 * math.cos(phase))
+  local pelvisPos = ply:GetPos() + Vector(0, 0, 38)
   sk.followers = {}
   for i, side in ipairs({"left", "right"}) do
     local fl = sk[side]
-    local pos, ang = LocalToWorld(SHOE_OFFSET, Angle(0, 0, 0), fl.footPos, fl.footAng)
-    sk.followers[i] = { pos = pos, ang = ang, parentAng = Angle(0, DIR > 0 and 0 or 180, 0) }
+    local pos, ang = LocalToWorld(SHOE_OFFSET, SHOE_ROT, fl.footPos, fl.footAng)
+    local f = bones.followers[i]
+    if f.kind == "calf" then
+      sk.followers[i] = { pos = pos, ang = ang, parentPos = fl.calfPos, parentAng = fl.calfAng }
+    else
+      sk.followers[i] = { pos = pos, ang = ang, parentPos = pelvisPos, parentAng = pelvisAng }
+    end
   end
   local res = RT.Controller.Calculate(ply, sk, bones, P)
-  for i, side in ipairs({"left", "right"}) do
-    local f, out, leg = sk.followers[i], res.followers[i], res[side]
-    -- forward: parent (pelvis) moved by -drop, plus our manip in parent space
-    local final = f.pos + Vector(0, 0, -res.bodyDrop) + LocalToWorld(out.pos, Angle(), Vector(), f.parentAng)
-    local expected = LocalToWorld(SHOE_OFFSET, Angle(), leg.footFinal, leg.footWorld)
-    maxShoeErr = math.max(maxShoeErr, final:Distance(expected))
-  end
   LASTRES = res
+  local ms = MODELSCALE or 1
+  for i, side in ipairs({"left", "right"}) do
+    local f, fsk, out = bones.followers[i], sk.followers[i], res.followers[i]
+    local K, Rc2, F, Rf2 = LegFK(sk, res, side, res.bodyDrop)
+    -- what the engine would draw for the follower
+    local finalPos, finalRot
+    if f.kind == "calf" then
+      local Rc = M(fsk.parentAng)
+      local lp = mv(T(Rc), fsk.pos - fsk.parentPos)
+      local lr = mul(T(Rc), M(fsk.ang))
+      finalPos = K + mv(Rc2, lp + out.pos * ms)
+      finalRot = mul(mul(Rc2, lr), M(out.ang))
+    else
+      local Rp = M(fsk.parentAng)
+      local lp = mv(T(Rp), fsk.pos - fsk.parentPos)
+      local lr = mul(T(Rp), M(fsk.ang))
+      finalPos = fsk.parentPos + Vector(0, 0, -res.bodyDrop) + mv(Rp, lp + out.pos * ms)
+      finalRot = mul(mul(Rp, lr), M(out.ang))
+    end
+    -- where it should be: same place relative to the foot the engine draws
+    local expectedPos, expectedAng = LocalToWorld(SHOE_OFFSET, SHOE_ROT, F, toAng(Rf2))
+    maxShoeErr = math.max(maxShoeErr, finalPos:Distance(expectedPos))
+    maxShoeAngErr = math.max(maxShoeAngErr, angErr(toAng(finalRot), expectedAng))
+  end
   local inStairs = res.debug.stairBlend >= 0.999
+  if res.bodyDrop ~= res.bodyDrop then nanFrames = nanFrames + 1 end
+  if now > 0.5 then
+    minRest = math.min(minRest, res.debug.restHeight)
+    maxRest = math.max(maxRest, res.debug.restHeight)
+  end
+  local rr = res.debug.restInfo and res.debug.restInfo.reason or "?"
+  restReasons[rr] = (restReasons[rr] or 0) + 1
+  if CURSPEED == 0 and res.left.procPhase == "swinging" and res.right.procPhase == "swinging" then idleBothSwing = idleBothSwing + 1 end
+  for _, side in ipairs({"left", "right"}) do
+    local leg = res[side]
+    if leg.ankle ~= leg.ankle or (leg.ankle and leg.ankle.x ~= leg.ankle.x) then nanFrames = nanFrames + 1 end
+    if inStairs and leg.procPhase == "planted" and leg.ankle then
+      local dx, dy = leg.ankle.x - ply.pos.x, leg.ankle.y - ply.pos.y
+      maxBehind = math.max(maxBehind, math.sqrt(dx * dx + dy * dy))
+    end
+    local starts = leg.stepStarts or {}
+    if #starts ~= lastStartCount[side] or (starts[#starts] and starts[#starts] ~= startLog[side][#startLog[side]]) then
+      if starts[#starts] then startLog[side][#startLog[side] + 1] = starts[#starts] end
+      lastStartCount[side] = #starts
+    end
+  end
   if res.debug.stairBlend > 0 then stairFrames = stairFrames + 1 end
   maxAbsDropFlat = math.max(maxAbsDropFlat, math.abs(res.bodyDrop))
   -- in animation mode the foot must follow the anim foot + ground offset
@@ -162,7 +242,7 @@ for i = 1, 60 * 5 do
   end
   -- body height in WORLD space must be continuous even though origin pops a full step
   local bodyZ = ply.pos.z - res.bodyDrop
-  if lastDrop then maxDropJump = math.max(maxDropJump, math.abs(bodyZ - lastDrop)) end
+  if lastDrop and not res.debug.teleport then maxDropJump = math.max(maxDropJump, math.abs(bodyZ - lastDrop)) end
   if TRACEB and math.abs(bodyZ - (lastDrop or bodyZ)) > (BTH or 4) then print(string.format("BODY t=%.3f x=%.1f oz=%.0f drop=%.2f jump=%.1f bz=%.2f blend=%.2f L=%.1f R=%.1f", now, ply.pos.x, ply.pos.z, res.bodyDrop, res.debug.originJump, bodyZ, res.debug.stairBlend, res.lRequiredDrop, res.rRequiredDrop)) end
   lastDrop = bodyZ
 end
@@ -182,6 +262,21 @@ end
 print(string.format("max treads between consecutive footfalls: %d, same-foot-twice: %d", maxSkip, skips))
 print(string.format("max planted foot penetration: %.2f  float: %.2f", maxPenetration, maxFloat))
 if STOPAT then local st = RT.State.Get(ply); local res = LASTRES; for _, side in ipairs({'left','right'}) do local leg = res[side]; print(string.format('STOPPED %s phase=%s ankle z-ground-rest=%.2f tread=%d', side, leg.procPhase, leg.ankle.z - H(leg.ankle.x) - res.debug.restHeight, math.floor(leg.ankle.x / TREAD))) end print('stair blend', res.debug.stairBlend, 'drop', res.bodyDrop) end
-print(string.format("max shoe-to-foot error: %.4f", maxShoeErr))
+-- the same foot starting 3+ steps within 2 s while standing = a re-step loop
+for _, side in ipairs({"left", "right"}) do
+  local log = startLog[side]
+  for i = 3, #log do
+    if log[i] - log[i - 2] < 2 and STOPAT and log[i - 2] > STOPAT + 0.5 and not (RESUMEAT and log[i] > RESUMEAT) then restepLoops = restepLoops + 1 end
+  end
+end
+local rl = {}
+for k, v in pairs(restReasons) do rl[#rl + 1] = k .. "=" .. v end
+table.sort(rl)
+print(string.format("REST H range after 0.5 s: %.2f .. %.2f (anim rest %.1f, expected %s)  samples: %s", minRest, maxRest, 3, tostring(EXPECTED_REST), table.concat(rl, " ")))
+RESULT = { nan = nanFrames, restepLoops = restepLoops, idleBothSwing = idleBothSwing, penetration = maxPenetration,
+  float = maxFloat, maxSkip = maxSkip, sameFootTwice = skips, shoeErr = maxShoeErr, shoeAngErr = maxShoeAngErr,
+  minRest = minRest, maxRest = maxRest }
+print(string.format("nan frames %d  idle both-feet swings %d  restep loops %d  max planted foot distance %.1f (leg %.1f)", nanFrames, idleBothSwing, restepLoops, maxBehind, 39))
+print(string.format("max shoe-to-foot error: %.4f  angle %.3f deg (followers %s, model scale %.2f)", maxShoeErr, maxShoeAngErr, FOLLOWER_KIND, MODELSCALE or 1))
 print(string.format("world=%s dir=%d stair frames=%d  max |drop|=%.2f  max solver err=%.3f", tostring(WORLD), DIR, stairFrames, maxAbsDropFlat, maxFootErr))
 print(string.format("max per-frame world body height change: %.2f (origin pops %d per step)", maxDropJump, RISE))

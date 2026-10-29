@@ -92,12 +92,14 @@ local function ProcessPlayer(ply)
 			ply.IKLastErrorPrint = RealTime()
 			ErrorNoHalt("[IK Foot] " .. tostring(errOrResult) .. "\n")
 		end
+		if RT.Diag then RT.Diag.Event(ply, "process_error", nil, { error = tostring(errOrResult), fails = (ply.IKFailCount or 0) + 1 }) end
 		HandleFailure(ply, bones, 5)
 		return
 	end
 
 	if not errOrResult then
 		-- skeleton came back empty. probably still loading
+		if RT.Diag then RT.Diag.Event(ply, "no_skeleton", nil, { fails = (ply.IKFailCount or 0) + 1 }) end
 		HandleFailure(ply, bones, 6)
 		return
 	end
@@ -106,6 +108,7 @@ local function ProcessPlayer(ply)
 	ply.IKFailCount = 0
 	ply.IKResult = errOrResult
 	ply.IKResultFrame = FrameNumber()
+	if RT.Diag then RT.Diag.OnResult(ply, errOrResult) end
 end
 
 -- PrePlayerDraw instead of PostPlayerDraw: the old hook computed the ik after
@@ -118,6 +121,12 @@ hook.Add("PrePlayerDraw", "IKFoot_PrePlayerDraw", function(ply)
 	if ply.IKLastFrame == frame then return end
 	ply.IKLastFrame = frame
 	ProcessPlayer(ply)
+end)
+
+-- after the draw the bone cache holds what the engine actually rendered:
+-- diagnostics compare it with what the solver asked for
+hook.Add("PostPlayerDraw", "IKFoot_DiagReadback", function(ply)
+	if RT.Diag and IsValid(ply) then RT.Diag.Readback(ply) end
 end)
 
 hook.Add("PostDrawTranslucentRenderables", "IKFoot_Debug3D", function(depth, skybox)
@@ -155,5 +164,12 @@ hook.Add("HUDPaint", "IKFoot_Debug2D", function()
 
 	for idx, line in ipairs(debug2D.lines) do
 		draw.SimpleText(line, "DermaDefaultBold", x, y + (idx - 1) * lineH, Color(220, 230, 245), TEXT_ALIGN_LEFT, TEXT_ALIGN_TOP)
+	end
+
+	for _, label in ipairs(debug2D.labels or {}) do
+		local scr = label.pos:ToScreen()
+		if scr.visible then
+			draw.SimpleTextOutlined(label.text, "DermaDefaultBold", scr.x + 12, scr.y, Color(255, 255, 255), TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER, 1, Color(0, 0, 0, 200))
+		end
 	end
 end)

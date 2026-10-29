@@ -1,6 +1,6 @@
 # IK Foot System
 
-**Version 0.50** - real stair stepping, analytical leg IK, robust bone detection
+**Version 0.51** - in-game diagnostics, follower/PAC/REST H fixes (0.50: real stair stepping, analytical leg IK, robust bone detection)
 
 Inverse kinematics foot placement system for Garry's Mod that makes player models adapt to terrain naturally.
 
@@ -18,6 +18,52 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - PAC3 compatibility (additive bone blending)
 - Debug visualization (contacts, IK targets, knee lines, stair profile)
 - Preset system for quick configuration switching
+
+## What's New in 0.51
+
+Fixes found in a full review of the per-frame pipeline. "Verified" below means the offline tests
+(`tests/run.py`, fake engine), not confirmed in Garry's Mod yet.
+
+- Bone layer composed rotations per euler component. With any other rotation on the same bone
+  (another addon, a PAC bone part on a leg) the drawn foot ended up away from the solver's result
+  (2.2 units for a 25/30/-20 deg foreign rotation in the test). Rotations are now composed; with PAC
+  parts on our bones the parts' share is recovered every frame so PAC's next reset reproduces the drawn pose.
+- Foot followers parented to the thigh or calf (not only to the pelvis) now get the foot's transform.
+  Detection records a verdict for every candidate and rejects bones that sit between both feet (skirt hem),
+  are tall (coat tail), belong to the other leg, sit under the spine/lean bone, are helpers, or already
+  inherit the foot. The foot centre falls back to toe vertices, then to the lowest mesh region, instead of
+  the current (possibly stale) bone matrix.
+- REST H has an expected value from the model's bind pose ankle height (scaled with the model) and rejects
+  reads outside it. Independently, a sudden deviation is only learned if it persists for 1 s.
+- Stepper: feet on turned/diagonal stairs no longer straddle an edge (heel, centre and toe must share one
+  surface); low frame rates run the stepper in sub-steps (10 fps used to skip four stairs); a trailing foot
+  that is about to fall out of reach lifts early instead of being teleported; a settle step started while
+  standing finishes with the body when walking off.
+- Teleports reset the smoothed state; stair-pop detection includes the ground entity's velocity (lifts);
+  the foot lock uses the same ground height as the unlocked path (no 2 unit pop when it engages);
+  leg length is cached per model scale; NaN angles from bone matrices are rejected; frame time is no
+  longer capped at 1/20 s.
+
+## Diagnostics
+
+All commands only observe; running them does not change the IK state.
+
+- `ik_foot_diag` - short console report: model, REST H vs expected, drop limiter, per-leg state, followers
+  with their engine error, rejected candidates near the feet, recent events, and a list of likely causes.
+- `ik_foot_dump` - full state to `garrysmod/data/ik_foot/dump_<date>.json` (config, bone set, follower
+  verdicts, current detailed sample, ~10 s history, events).
+- `ik_foot_capture [seconds] [detail]` - record samples at 30 Hz (max 60 s) to `data/ik_foot/capture_<date>.json`;
+  `ik_foot_capture_stop` saves early.
+- `ik_foot_debug 0/1/2` - overlay off / basic / detailed. Colours: gray = animated foot, yellow = target,
+  green = IK result (leg lines), magenta = engine read back, cyan = ground contact, orange = knee direction.
+- `ik_foot_diag_history 0/1` (default 1) - cheap always-on history for the local player.
+- `ik_foot_diag_print 0/1` (default 1) - rate-limited event lines in the console while debugging or capturing.
+
+Data is recorded in three stages: `anim` (clean pose without IK), `solver` (what was computed) and
+`engine` (bones read back after the model was drawn). A solver/engine difference means something between
+our manipulation and the final bones did not behave as assumed. Events (`foreign_write`, `engine_mismatch`,
+`follower_error`, `rest_jump`, `contact_lost`, `solver_miss`, `restep_loop`, `replant`, `teleport`, `nan`,
+`process_error`) carry time, frame, leg, a count when repeated, and the relevant values.
 
 ## What's New in 0.50
 
@@ -128,7 +174,7 @@ Removed: `ik_foot_high_foot_bend_boost` (compensated the old wrong knee formula)
 
 ## Running the tests
 
-The runtime math can be tested without Garry's Mod: `pip install lupa` then `python3 tests/run.py`.
+The runtime can be tested without Garry's Mod: `pip install lupa` then `python3 tests/run.py` (solver, bone detection, PAC bone layer, stair/flat/curb/ramp walks with stops, turns, strafing, teleport and 10 fps, REST H bad reads, and the whole per-frame pipeline on a fake engine incl. dump/capture JSON). It exits non-zero on any failed check.
 
 ## Usage
 

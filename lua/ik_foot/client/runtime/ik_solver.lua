@@ -100,7 +100,9 @@ function Solver.SolveTwoBone(H, K, F, T, poleHint)
 	local dir = toT / dist
 
 	local dMin, dMax = Solver.ReachLimits(a, b)
+	local requested = dist
 	dist = math.Clamp(dist, dMin, dMax)
+	local limit = requested > dMax and "too_far" or (requested < dMin and "too_close" or nil)
 
 	-- law of cosines: distance of the knee along hip->target, and off it
 	local x = (a * a - b * b + dist * dist) / (2 * dist)
@@ -128,7 +130,9 @@ function Solver.SolveTwoBone(H, K, F, T, poleHint)
 	end
 	pole:Normalize()
 
-	return H + dir * x + pole * y, H + dir * dist
+	return H + dir * x + pole * y, H + dir * dist, {
+		upper = a, lower = b, requested = requested, minReach = dMin, maxReach = dMax, limit = limit,
+	}
 end
 
 -- full leg solve -> manipulation angles for thigh, calf and foot.
@@ -142,7 +146,7 @@ function Solver.SolveLeg(leg, drop, target, footTargetAng, poleHint)
 	local K = leg.calfPos + shift
 	local F = leg.footPos + shift
 
-	local K2, F2 = Solver.SolveTwoBone(H, K, F, target, poleHint)
+	local K2, F2, reach = Solver.SolveTwoBone(H, K, F, target, poleHint)
 	if not K2 then return nil end
 
 	local axT, angT = RotationBetween((K - H):GetNormalized(), (K2 - H):GetNormalized())
@@ -169,7 +173,13 @@ function Solver.SolveLeg(leg, drop, target, footTargetAng, poleHint)
 		foot = LocalDelta(leg.footAng, footUndone),
 		knee = K2,
 		ankle = F2,
+		hip = H,
 		reached = F2:DistToSqr(target) < 0.25,
+		reach = reach,
+		-- world rotations applied to the chain, for anything that has to move
+		-- with the thigh or calf (foot followers parented inside the leg)
+		thighAxis = axT, thighDeg = angT,
+		calfAxis = axC, calfDeg = angC,
 	}
 end
 

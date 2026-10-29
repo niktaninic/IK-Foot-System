@@ -38,8 +38,15 @@ function Controller.Calculate(ply, sk, bones, P)
 	local State = RT.State
 	local Solver = RT.Solver
 	local state = State.Get(ply)
-	local dt = math.Clamp(FrameTime(), 1 / 300, 1 / 20)
+	-- every integrator below is stable for large steps, so only guard against
+	-- 0 and hitches. the old 1/20 cap made feet and springs run in slow motion
+	-- below 20 fps
+	local dt = math.Clamp(FrameTime(), 1 / 1000, 0.1)
 	local now = RealTime()
+	local Diag = RT.Diag
+	local function Event(side, kind, values)
+		if Diag then Diag.Event(ply, kind, side, values) end
+	end
 
 	local legLength = P.leg_length > 0 and P.leg_length or sk.legLength
 	local scale = math.Clamp(legLength / RT.REFERENCE_LEG_LENGTH, 0.4, 2.5)
@@ -52,10 +59,25 @@ function Controller.Calculate(ply, sk, bones, P)
 	local vel2D = vel:Length2D()
 	local velZ = vel.z
 	local onGround = ply:OnGround() and ply:WaterLevel() < 2
+	local groundEnt = ply:GetGroundEntity()
+	local groundVel = IsValid(groundEnt) and groundEnt:GetVelocity() or vector_origin
+	-- the teleport test needs the real frame time: after a hitch (loading, alt
+	-- tab) the capped dt would make normal movement look like a teleport
+	local frameDt = math.max(FrameTime(), 1 / 1000)
+	local jump, teleport = State.ConsumeOriginJump(state, origin, vel + groundVel, frameDt, onGround, scale)
+	if teleport then
+		-- respawn nearby, teleporter, admin goto, big network correction: all
+		-- smoothed state refers to the old place. keep only the calibration
+		Event(nil, "teleport", { origin = origin })
+		State.SoftRecover(ply)
+		state = State.Get(ply)
+		State.ConsumeOriginJump(state, origin, vel + groundVel, frameDt, onGround, scale)
+		jump = 0
+	end
 	local crouch = State.UpdateCrouch(state, ply:Crouching(), dt)
 	local body = state.body
-	local wasOnGround = body.wasOnGround
-	local jump = State.ConsumeOriginJump(state, origin.z, velZ, dt, onGround, scale)
+	local wasOnGround = body.prevOnGround
+	body.prevOnGround = onGround
 
 	local smoothTime = 1.2 / math.max(P.smoothing, 1)
 	local rotSmoothTime = 1.2 / math.max(P.rotation_smoothing, 1)
@@ -82,20 +104,47 @@ function Controller.Calculate(ply, sk, bones, P)
 		right = sk.right.footPos.z - origin.z,
 	}
 	local seed = math.Clamp(math.min(footH.left, footH.right), 0.5 * scale, 10 * scale)
+	local modelScale = math.max(ply:GetModelScale() or 1, 0.01)
+	local expectedRest = RT.GetExpectedRestHeight(bones.profile, modelScale)
 	local restH
+	local prevRest = state.restHeight
 	-- learn only from a foot that is really planted in the animation (barely
 	-- moving in the world), never from transitions or a foot mid-swing
 	local lowSide = footH.left <= footH.right and "left" or "right"
 	local lowPlanted = (state.legs[lowSide].footSpeed or math.huge) < 25 * scale
-	if P.dynamic_sole and onGround and lowPlanted and not crouch.inTransition and state.stepper.blend < 0.01 then
-		restH = State.UpdateRestHeight(state, footH[lowSide], dt, seed)
+	local restUsed, restReason = false, nil
+	if not P.dynamic_sole then
+		restReason = "dynamic_sole_off"
+	elseif not onGround then
+		restReason = "in_air"
+	elseif not lowPlanted then
+		restReason = "foot_not_planted"
+	elseif crouch.inTransition then
+		restReason = "crouch_transition"
+	elseif state.stepper.blend >= 0.01 then
+		restReason = "stair_stepper_active"
+	end
+	if restReason then
+		-- without runtime calibration the model's own ankle height is the best
+		-- answer, the per-frame seed only when the model gave us nothing
+		restH = state.restHeight or expectedRest or seed
 	else
-		restH = state.restHeight or seed
+		restH, restUsed, restReason = State.UpdateRestHeight(state, footH[lowSide], dt, seed, expectedRest, scale)
 	end
 	-- an ankle can't physically sit under the floor or at knee height. keeps a
 	-- bad read (another addon moving bones behind our back) from poisoning it
+	if expectedRest then
+		restH = math.Clamp(restH, expectedRest * 0.5, expectedRest * 1.6 + scale)
+	end
 	restH = math.Clamp(restH, 0.3 * scale, 10 * scale)
 	state.restHeight = restH
+	-- learning is rate limited (0.6 s / 3 s time constants); anything faster
+	-- than ~1 unit per 0.1 s came from somewhere else
+	if prevRest and math.abs(restH - prevRest) > (10 * dt + 0.25) * scale then
+		Event(lowSide, "rest_jump", { from = prevRest, to = restH, sample = footH[lowSide], reason = restReason })
+	end
+	local restInfo = { value = restH, expected = expectedRest, sample = footH[lowSide], sampleSide = lowSide,
+		used = restUsed, reason = restReason, seed = seed }
 
 	local plantW = {}
 	for _, side in ipairs(SIDES) do
@@ -105,14 +154,23 @@ function Controller.Calculate(ply, sk, bones, P)
 	local idle = State.UpdateIdle(state, onGround and P.stabilize_idle, vel2D, velZ, P.idle_velocity, dt)
 
 	-- === stairs ===
-	local groundEnt = ply:GetGroundEntity()
-	local groundMoving = IsValid(groundEnt) and groundEnt:GetVelocity():Length() > maxSurfaceSpeed
+	local groundMoving = groundVel:Length() > maxSurfaceSpeed
 	local stairsAllowed = P.stair_stepper and onGround and not groundMoving and not crouch.inTransition
 	local scan = State.UpdateStairScan(state, now, origin, moveDir, scale, P, stairsAllowed)
 
-	local function SampleGroundAt(pos)
-		local s = RT.Ground.TraceSample(Vector(pos.x, pos.y, traceStartZ), groundDist, sole, maxSurfaceSpeed, true)
-		return s.hit and s.hitPos.z or nil
+	-- ground height under a stepper placement and whether heel, centre and
+	-- toe (along the body's facing) rest on the same surface
+	local function GroundAt(pos)
+		local function Z(p)
+			local s = RT.Ground.TraceSample(Vector(p.x, p.y, traceStartZ), groundDist, sole, maxSurfaceSpeed, false)
+			return s.hit and s.hitPos.z or nil
+		end
+		local zc = Z(pos)
+		if not zc then return nil, false end
+		local zt = Z(pos + bodyFwd * (4 * scale))
+		local zh = Z(pos - bodyFwd * (3 * scale))
+		local tol = 1 * scale
+		return zc, zt ~= nil and zh ~= nil and math.abs(zt - zc) <= tol and math.abs(zh - zc) <= tol
 	end
 
 	local lateral = {}
@@ -125,14 +183,24 @@ function Controller.Calculate(ply, sk, bones, P)
 		lateral[side] = math.Clamp(lat, -8 * scale, 8 * scale)
 	end
 
-	local proc, procBlend, treadsPerStep = State.UpdateStepper(state, {
+	-- the stepper can start or finish at most one step per call. at low frame
+	-- rates that is slower than the gait needs and the feet fall behind, so
+	-- big frames are split into <= 1/30 s sub steps along the origin's path
+	local prevStepOrigin = state.stepperOrigin or origin
+	state.stepperOrigin = Vector(origin)
+	local subSteps = math.Clamp(math.ceil(dt * 30 - 0.001), 1, 4)
+	if prevStepOrigin:DistToSqr(origin) > (48 * scale) ^ 2 then prevStepOrigin = origin end
+	local proc, procBlend, treadsPerStep
+	for k = 1, subSteps do
+		local subOrigin = subSteps > 1 and Lerp3(k / subSteps, prevStepOrigin, origin) or origin
+		proc, procBlend, treadsPerStep = State.UpdateStepper(state, {
 		active = stairsAllowed and state.stairs.active,
 		scan = scan,
-		origin = origin,
+		origin = subOrigin,
 		right = moveRight,
 		speed = vel2D,
 		idleSpeed = math.max(P.idle_velocity, 2),
-		dt = dt,
+		dt = dt / subSteps,
 		scale = scale,
 		legLength = legLength,
 		treadsPerStep = math.floor(P.stair_treads_per_step + 0.5),
@@ -140,8 +208,11 @@ function Controller.Calculate(ply, sk, bones, P)
 		lift = P.stair_step_lift * scale,
 		animFeet = { left = sk.left.footPos, right = sk.right.footPos },
 		lateral = lateral,
-		sampleGround = SampleGroundAt,
+		groundAt = GroundAt,
+		now = now,
+		onEvent = function(side, kind, values) Event(side, kind, values) end,
 	})
+	end
 
 	-- === per foot ground offset ===
 	local feet = {}
@@ -159,9 +230,15 @@ function Controller.Calculate(ply, sk, bones, P)
 			foot.contact = contact
 
 			local groundZ = P.anti_clip and contact.highestZ or contact.position.z
+			if leg.hadContact and not contact.hasHit and onGround then
+				Event(side, "contact_lost", { foot = F, samples = contact.hitCount })
+			end
+			leg.hadContact = contact.hasHit
 			local lockZ = State.UpdateFootLock(leg, {
 				onGround = onGround and not crouch.inTransition,
 				contact = contact,
+				groundZ = groundZ,
+				now = now,
 				rawFootPos = F,
 				footSpeed = speed,
 				plantWeight = plantW[side],
@@ -237,6 +314,7 @@ function Controller.Calculate(ply, sk, bones, P)
 	local reachDrop = math.max(minL - (1 - sL) * relax, minR - (1 - sR) * relax) + 0.6 * scale
 
 	local desired = 0
+	local dropLimiter = "in_air"
 	if onGround then
 		local diff = dHigh - dLow
 		local unevenFactor = math.Clamp(diff / (6 * scale), 0, 1)
@@ -245,13 +323,19 @@ function Controller.Calculate(ply, sk, bones, P)
 			+ diff * P.uneven_drop_scale * 0.2
 
 		desired = math.max(reachDrop, dLow) + extra
+		dropLimiter = reachDrop >= dLow and "reach" or "lowest_foot"
 		-- dont crouch so low that the higher foot's knee would have to fold
 		-- shut. when both cant be satisfied the supporting (lower) foot wins
 		local foldLimit = math.min(maxL, maxR)
-		desired = math.min(desired, math.max(foldLimit, reachDrop))
+		if desired > math.max(foldLimit, reachDrop) then
+			desired = math.max(foldLimit, reachDrop)
+			dropLimiter = "knee_fold"
+		end
 
 		local cap = math.min(P.max_body_drop * scale, legLength * 0.6)
 		local floor = math.max(math.min(dLow, 0), -6 * scale)
+		if desired > math.max(cap, floor) then dropLimiter = "max_body_drop" end
+		if desired < floor then dropLimiter = "floor" end
 		desired = math.Clamp(desired, floor, math.max(cap, floor))
 
 		-- landing: absorb the impact in the knees
@@ -283,6 +367,7 @@ function Controller.Calculate(ply, sk, bones, P)
 	-- foot is out of reach, catch up much faster than the normal smoothing
 	if onGround and body.drop < reachDrop then
 		body.drop = body.drop + (reachDrop - body.drop) * ExpBlend(dt, 0.025)
+		dropLimiter = dropLimiter .. "+reach_catchup"
 	end
 	body.drop = math.Clamp(body.drop, -8 * scale, legLength * 0.8)
 	local drop = body.drop
@@ -310,7 +395,21 @@ function Controller.Calculate(ply, sk, bones, P)
 		end
 
 		local solved = Solver.SolveLeg(skLeg, drop, foot.target, footAng, bodyFwd)
+		if not solved then Event(side, "solver_failed", { target = foot.target, drop = drop }) end
+		local stepFoot = state.stepper.feet[side]
 		legsOut[side] = {
+			solved = solved,
+			animFoot = skLeg.footPos,
+			animAng = skLeg.footAng,
+			hip = solved and solved.hip or (skLeg.thighPos - Vector(0, 0, drop)),
+			reach = solved and solved.reach,
+			support = foot.support,
+			plantW = foot.plantW,
+			dropLimits = { min = side == "left" and minL or minR, max = side == "left" and maxL or maxR },
+			lockAge = leg.lockPos and leg.lockTime and (now - leg.lockTime) or nil,
+			stepReason = stepFoot and stepFoot.lastReason,
+			stepBlocked = stepFoot and stepFoot.blocked,
+			stepStarts = stepFoot and stepFoot.starts,
 			footWorld = solved and footAng or skLeg.footAng,
 			footFinal = solved and solved.ankle or (skLeg.footPos - Vector(0, 0, drop)),
 			thigh = solved and solved.thigh or Angle(),
@@ -331,11 +430,14 @@ function Controller.Calculate(ply, sk, bones, P)
 		}
 	end
 
-	-- === foot followers (shoes etc. not parented to the foot) ===
-	-- keep each one where it sits relative to the animated foot, but relative
-	-- to the solved foot instead
+	-- === foot followers (shoes etc. that do not inherit the foot's motion) ===
+	-- desired: keep each one where it sits relative to the animated foot, but
+	-- relative to the solved foot. what it inherits without help depends on
+	-- its parent: nothing (model / static), the body drop (body), or the
+	-- thigh / calf rotation of its leg. the manipulation is the difference,
+	-- expressed in the parent's ik frame (position) and its own frame (angle)
 	local followersOut = {}
-	local modelScale = math.max(ply:GetModelScale() or 1, 0.01)
+	local dropVec = Vector(0, 0, -drop)
 	for i, f in ipairs(bones.followers or {}) do
 		local fsk = sk.followers and sk.followers[i]
 		local leg = legsOut[f.side]
@@ -343,16 +445,44 @@ function Controller.Calculate(ply, sk, bones, P)
 			local skLeg = sk[f.side]
 			local relPos, relAng = WorldToLocal(fsk.pos, fsk.ang, skLeg.footPos, skLeg.footAng)
 			local ikPos, ikAng = LocalToWorld(relPos, relAng, leg.footFinal, leg.footWorld)
-			-- the parent may already have moved down with the body
-			local shift = f.shifted and Vector(0, 0, -drop) or vector_origin
-			local worldDelta = ikPos - fsk.pos - shift
-			local localDelta = WorldToLocal(worldDelta, angle_zero, vector_origin, fsk.parentAng)
-			followersOut[i] = { pos = localDelta / modelScale, ang = Solver.LocalDelta(fsk.ang, ikAng) }
+
+			local inheritedPos, inheritedAng, parentIKAng = fsk.pos, fsk.ang, fsk.parentAng
+			local sol = leg.solved
+			if f.kind == "body" then
+				inheritedPos = fsk.pos + dropVec
+			elseif (f.kind == "thigh" or f.kind == "calf") and sol then
+				-- the same rigid motion the solver gave the thigh (about the hip)
+				-- and, for the calf, the extra rotation about the new knee
+				local function Move(pos)
+					local p = sol.hip + Solver.RotateVector(pos + dropVec - sol.hip, sol.thighAxis, sol.thighDeg)
+					if f.kind == "calf" then
+						p = sol.knee + Solver.RotateVector(p - sol.knee, sol.calfAxis, sol.calfDeg)
+					end
+					return p
+				end
+				local function Turn(ang)
+					local a = Solver.RotateAngle(ang, sol.thighAxis, sol.thighDeg)
+					if f.kind == "calf" then a = Solver.RotateAngle(a, sol.calfAxis, sol.calfDeg) end
+					return a
+				end
+				inheritedPos, inheritedAng, parentIKAng = Move(fsk.pos), Turn(fsk.ang), Turn(fsk.parentAng)
+			elseif f.kind == "thigh" or f.kind == "calf" then
+				inheritedPos = fsk.pos + dropVec
+			end
+
+			local localDelta = WorldToLocal(ikPos - inheritedPos, angle_zero, vector_origin, parentIKAng)
+			followersOut[i] = {
+				pos = localDelta / modelScale,
+				ang = Solver.LocalDelta(inheritedAng, ikAng),
+				expectedPos = ikPos,
+				expectedAng = ikAng,
+			}
 		end
 	end
 
 	-- === lean ===
 	local leanManip
+	if not P.lean_enabled then state.lean.lastVel = nil end
 	if P.lean_enabled and bones.leanBone and sk.spineAng then
 		local lean = state.lean
 		local accel = Vector()
@@ -402,68 +532,22 @@ function Controller.Calculate(ply, sk, bones, P)
 			originJump = jump, landDip = body.landDip,
 			auxRoots = #bones.auxRoots,
 			followers = #(bones.followers or {}),
+			dropLimiter = dropLimiter,
+			desiredDrop = desired,
+			reachDrop = reachDrop,
+			onGround = onGround,
+			crouching = crouch.crouching,
+			teleport = teleport,
+			restInfo = restInfo,
+			dt = dt,
 		},
 	}
 end
 
 -- =====================================================================
--- debug
+-- debug (drawing lives in ik_diag.lua, kept here for api compatibility)
 -- =====================================================================
 
 function Controller.DrawDebug(ply, result)
-	local debugCvar = RT.CVars.debug
-	if not debugCvar then return end
-	local level = debugCvar:GetInt()
-	if level <= 0 then return end
-
-	for _, side in ipairs(SIDES) do
-		local leg = result[side]
-		local isLeft = side == "left"
-		local col = RT.Ground.DebugColors(isLeft)
-		if leg.contact then
-			RT.Ground.DrawSamples(leg.contact.samples, col, RT.Colors.green, level)
-		end
-		if leg.targetPos then
-			render.DrawWireframeBox(leg.targetPos, angle_zero, Vector(-1.5, -1.5, -1.5), Vector(1.5, 1.5, 1.5), col, true)
-		end
-		if leg.knee and leg.ankle then
-			render.DrawLine(leg.knee, leg.ankle, col, true)
-		end
-		if leg.lockPos then
-			render.DrawWireframeBox(leg.lockPos, angle_zero, Vector(-1, -1, -0.25), Vector(1, 1, 0.25), RT.Colors.white, true)
-		end
-		if level > 1 and not leg.reached and leg.targetPos then
-			render.DrawWireframeBox(leg.targetPos, angle_zero, Vector(-2.5, -2.5, -0.25), Vector(2.5, 2.5, 0.25), Color(255, 60, 60), true)
-		end
-	end
-
-	if level > 1 then
-		RT.Ground.DrawScan(result.scan)
-		local bottom, top
-		if ply:Crouching() then
-			bottom, top = ply:GetHullDuck()
-		else
-			bottom, top = ply:GetHull()
-		end
-		render.DrawWireframeBox(ply:GetPos(), angle_zero, bottom, top, RT.Colors.white, true)
-	end
-
-	if ply == LocalPlayer() then
-		local d = result.debug or {}
-		local l, r = result.left, result.right
-		RT.Debug2D = RT.Debug2D or {}
-		RT.Debug2D.expireAt = CurTime() + 0.2
-		RT.Debug2D.lines = {
-			string.format("IK DEBUG [%s]", IsValid(ply) and ply:Nick() or "player"),
-			string.format("VEL2D: %.1f  VELZ: %.1f  JUMP: %.1f  LAND: %.1f", d.velocity2D or 0, d.vertVel or 0, d.originJump or 0, d.landDip or 0),
-			string.format("TRACE HITS L/R: %d/%d", d.lHitCount or 0, d.rHitCount or 0),
-			string.format("L_REQ: %.1f  R_REQ: %.1f  DROP: %.1f", result.lRequiredDrop or 0, result.rRequiredDrop or 0, result.bodyDrop or 0),
-			string.format("PLANTED L/R: %s/%s  REACHED L/R: %s/%s", l.planted and "Y" or "N", r.planted and "Y" or "N", l.reached and "Y" or "N", r.reached and "Y" or "N"),
-			string.format("FOOT SPD L/R: %.1f / %.1f", l.footSpeed or 0, r.footSpeed or 0),
-			string.format("IDLE: %s (%.2f)", d.idleActive and "ON" or "OFF", d.idleCandidateTime or 0),
-			string.format("SCALE: %.2f  LEG: %.1f  REST H: %.2f  SOLE: %+.2f  EXTRA ROOTS: %d  FOOT FOLLOWERS: %d", d.modelScale or 1, d.measuredLeg or 0, d.restHeight or 0, d.soleCorrection or 0, d.auxRoots or 0, d.followers or 0),
-			string.format("STAIRS: %s (%.0f%%)  %s  DEPTH: %.1f  RISE: %.1f  TREADS/STEP: %d", d.stairMode and "ON" or "OFF", (d.stairBlend or 0) * 100, d.stairAscending and "UP" or "DOWN", d.stairDepth or 0, d.stairRise or 0, d.treadsPerStep or 0),
-			string.format("STEP L: %s %.2f   R: %s %.2f", l.procPhase, l.procT or 0, r.procPhase, r.procT or 0),
-		}
-	end
+	if RT.Diag and RT.Diag.DrawDebug then RT.Diag.DrawDebug(ply, result) end
 end

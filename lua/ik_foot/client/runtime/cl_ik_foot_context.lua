@@ -154,7 +154,9 @@ function RT.ApplyBlendedBonePosition(ply, bone, offset)
 	local current = ply:GetManipulateBonePosition(bone) or Vector()
 	local storeValue = store and store.positions[bone]
 
-	local applied = StillIncluded(entry, current, storeValue, VecNear, POS_EPS) and entry.applied or vector_origin
+	local included = StillIncluded(entry, current, storeValue, VecNear, POS_EPS)
+	if entry and not included and RT.Diag and entry.applied:LengthSqr() > 1e-6 then RT.Diag.ForeignWrite(ply, bone, "pos") end
+	local applied = included and entry.applied or vector_origin
 	local delta = offset - applied
 
 	local newEnt = current + delta
@@ -168,6 +170,23 @@ function RT.ApplyBlendedBonePosition(ply, bone, offset)
 	state.pos[bone] = { applied = Vector(offset), ent = Vector(newEnt), store = newStore and Vector(newStore) or nil }
 end
 
+-- rotations are composed, not added per euler component: with another
+-- manipulation on the same bone, euler(a) + euler(b) is not the rotation a*b
+-- the solver assumed (it computes our offset on top of the pose it read)
+local function ComposeAng(a, b)
+	local _, r = LocalToWorld(vector_origin, b, vector_origin, a)
+	return r
+end
+local function RemoveAng(c, b)
+	-- c * b^-1
+	local _, binv = WorldToLocal(vector_origin, angle_zero, vector_origin, b)
+	local _, r = LocalToWorld(vector_origin, binv, vector_origin, c)
+	return r
+end
+local function IsZeroAng(a)
+	return math.abs(a.p) + math.abs(a.y) + math.abs(a.r) < 1e-6
+end
+
 function RT.ApplyBlendedBoneAngles(ply, bone, offset)
 	if bone == nil or bone < 0 then return end
 	local state = RT.GetIKBlendState(ply)
@@ -176,19 +195,32 @@ function RT.ApplyBlendedBoneAngles(ply, bone, offset)
 	local current = ply:GetManipulateBoneAngles(bone) or Angle()
 	local storeValue = store and store.angles[bone]
 
-	local applied = StillIncluded(entry, current, storeValue, AngNear, ANG_EPS) and entry.applied or angle_zero
-	local dp, dy, dr = offset.p - applied.p, offset.y - applied.y, offset.r - applied.r
+	local included = StillIncluded(entry, current, storeValue, AngNear, ANG_EPS)
+	if entry and not included and RT.Diag and not IsZeroAng(entry.applied) then RT.Diag.ForeignWrite(ply, bone, "ang") end
+	local applied = included and entry.applied or angle_zero
 
-	local newEnt = Angle(current.p + dp, current.y + dy, current.r + dr)
-	ply:ManipulateBoneAngles(bone, newEnt)
-	local newStore
-	if store then
-		local base = storeValue or angle_zero
-		newStore = Angle(base.p + dp, base.y + dy, base.r + dr)
-		store.angles[bone] = newStore
+	if not store then
+		-- plain entity: remove our previous rotation, compose the new one
+		local base = IsZeroAng(applied) and current or RemoveAng(current, applied)
+		local newEnt = IsZeroAng(offset) and base or ComposeAng(base, offset)
+		ply:ManipulateBoneAngles(bone, newEnt)
+		state.ang[bone] = { applied = Angle(offset), ent = Angle(newEnt) }
+		return
 	end
 
-	state.ang[bone] = { applied = Angle(offset), ent = Angle(newEnt), store = newStore and Angle(newStore) or nil }
+	-- pac: the entity is pac's stored value PLUS its bone parts, added per
+	-- euler component by pac itself. recover the parts' share, rebuild the
+	-- clean value from pac's own base, compose our rotation on top, and store
+	-- exactly what makes pac's next reset reproduce the drawn result
+	local sv = storeValue or angle_zero
+	local base = (included and entry.storeBase) or sv
+	local part = Angle(current.p - sv.p, current.y - sv.y, current.r - sv.r)
+	local clean = Angle(base.p + part.p, base.y + part.y, base.r + part.r)
+	local newEnt = IsZeroAng(offset) and clean or ComposeAng(clean, offset)
+	local newStore = Angle(newEnt.p - part.p, newEnt.y - part.y, newEnt.r - part.r)
+	ply:ManipulateBoneAngles(bone, newEnt)
+	store.angles[bone] = newStore
+	state.ang[bone] = { applied = Angle(offset), ent = Angle(newEnt), store = Angle(newStore), storeBase = Angle(base) }
 end
 
 -- nuclear: zero the bone everywhere, ignoring the blend bookkeeping
@@ -302,8 +334,12 @@ end
 -- scans the mesh once: which bones actually deform vertices, and where the
 -- soles of the feet are in bind pose
 local function AnalyzeMesh(model, footBones)
-	local result = { weighted = {}, hasWeights = false, footSoleZ = nil, lowestZ = nil, footLength = 0, footWidth = 0, footVerts = 0, centroids = {} }
-	local sums, counts = {}, {}
+	local result = {
+		weighted = {}, hasWeights = false, footSoleZ = nil, lowestZ = nil,
+		footLength = 0, footWidth = 0, footVerts = 0,
+		centroids = {}, counts = {}, minZ = {}, maxZ = {}, lowRegion = {},
+	}
+	local sums, counts, minZ, maxZ = {}, result.counts, result.minZ, result.maxZ
 	local meshes = util.GetModelMeshes(model)
 	if not meshes then return result end
 
@@ -311,23 +347,28 @@ local function AnalyzeMesh(model, footBones)
 	local footMinZ = math.huge
 	local footMinX, footMaxX, footMinY, footMaxY = math.huge, -math.huge, math.huge, -math.huge
 	local footVerts = 0
+	local all = {}
 
 	for _, group in ipairs(meshes) do
 		for _, v in ipairs(group.verticies or group.triangles or {}) do
 			local pos = v.pos
 			if pos then
+				all[#all + 1] = pos
 				if pos.z < lowestZ then lowestZ = pos.z end
 				local onFoot = false
 				for _, w in ipairs(v.weights or {}) do
 					local bone = w.bone
-					if bone and (w.weight or 0) > 0.01 then
+					local weight = w.weight or 0
+					if bone and weight > 0.01 then
 						result.weighted[bone] = true
 						result.hasWeights = true
-						if footBones[bone] and (w.weight or 0) >= 0.3 then onFoot = true end
-						if (w.weight or 0) >= 0.3 then
+						if weight >= 0.3 then
+							if footBones[bone] then onFoot = true end
 							local sum = sums[bone]
 							if sum then sum:Add(pos) else sums[bone] = Vector(pos) end
 							counts[bone] = (counts[bone] or 0) + 1
+							if not minZ[bone] or pos.z < minZ[bone] then minZ[bone] = pos.z end
+							if not maxZ[bone] or pos.z > maxZ[bone] then maxZ[bone] = pos.z end
 						end
 					end
 				end
@@ -348,7 +389,22 @@ local function AnalyzeMesh(model, footBones)
 		result.centroids[bone] = sum / counts[bone]
 	end
 
-	if lowestZ < math.huge then result.lowestZ = lowestZ end
+	if lowestZ < math.huge then
+		result.lowestZ = lowestZ
+		-- the lowest few units of the mesh, split left (+Y) / right (-Y): a
+		-- foot position estimate that needs no weights on the foot bone at all
+		local sideSum, sideCount = { left = Vector(), right = Vector() }, { left = 0, right = 0 }
+		for _, pos in ipairs(all) do
+			if pos.z <= lowestZ + 4 then
+				local side = pos.y >= 0 and "left" or "right"
+				sideSum[side]:Add(pos)
+				sideCount[side] = sideCount[side] + 1
+			end
+		end
+		for side, n in pairs(sideCount) do
+			if n >= 4 then result.lowRegion[side] = sideSum[side] / n end
+		end
+	end
 	if footVerts >= 8 then
 		result.footSoleZ = footMinZ
 		result.footVerts = footVerts
@@ -357,6 +413,38 @@ local function AnalyzeMesh(model, footBones)
 		result.footWidth = footMaxY - footMinY
 	end
 	return result
+end
+
+-- bind (reference) pose ankle height above the model origin, per side. the
+-- planted foot in an animation sits about this high, so it is the expected
+-- value for the learned REST H. read once per model from a hidden
+-- clientside model; nil when the engine gives us nothing sane
+local function ReadBindAnkles(model, footNames)
+	if not isfunction(ClientsideModel) then return nil end
+	local ok, res = pcall(function()
+		local mdl = ClientsideModel(model, RENDERGROUP_OTHER)
+		if not IsValid(mdl) then return nil end
+		mdl:SetNoDraw(true)
+		for _, seqName in ipairs({ "reference", "ragdoll" }) do
+			local seq = mdl:LookupSequence(seqName)
+			if seq and seq >= 0 then
+				mdl:ResetSequence(seq)
+				break
+			end
+		end
+		mdl:SetCycle(0)
+		mdl:SetupBones()
+		local out = {}
+		for side, name in pairs(footNames) do
+			local bone = mdl:LookupBone(name)
+			local m = bone and mdl:GetBoneMatrix(bone)
+			if m then out[side] = m:GetTranslation().z - mdl:GetPos().z end
+		end
+		mdl:Remove()
+		return out
+	end)
+	if not ok or not res or not res.left or not res.right then return nil end
+	return res
 end
 
 local function BuildBoneSet(ply, model)
@@ -411,7 +499,10 @@ local function BuildBoneSet(ply, model)
 
 	local profile = IKFoot.ModelAnalysisCache[model]
 	if not profile then
-		profile = { mesh = AnalyzeMesh(model, footBones) }
+		profile = {
+			mesh = AnalyzeMesh(model, footBones),
+			bindAnkle = ReadBindAnkles(model, { left = ply:GetBoneName(bones.lFoot), right = ply:GetBoneName(bones.rFoot) }),
+		}
 		IKFoot.ModelAnalysisCache[model] = profile
 	end
 	bones.profile = profile
@@ -444,64 +535,138 @@ local function BuildBoneSet(ply, model)
 	-- without weight data we cant tell hair from helpers, so we leave them alone
 
 	-- foot followers: geometry skinned around a foot (shoes, socks, heels,
-	-- anklets) to bones that are NOT children of the foot. some models hang
-	-- those bones straight off the pelvis; the animation keeps them on the foot,
-	-- but when the ik moves the foot they would be left behind (shoes floating
-	-- under the stairs). they get the same transform the foot gets.
+	-- anklets) to bones that do NOT inherit the foot's motion. some models hang
+	-- those bones off the pelvis or the calf; the animation keeps them on the
+	-- foot, but when the ik moves the foot they would be left behind (shoes
+	-- floating under the stairs). they get the same transform the foot gets.
+	-- every candidate gets a recorded verdict so it can be inspected in game.
 	local followers = {}
+	local analysis = {}
 	local centroids = mesh.centroids or {}
-	local function FootCentre(foot, toe)
-		if centroids[foot] then return centroids[foot] end
-		if toe and centroids[toe] then return centroids[toe] end
-		-- nothing skinned to the foot itself: use where the bone is right now,
-		-- in model space
-		local m = ply:GetBoneMatrix(foot)
-		if not m then return nil end
-		local ang = ply.GetRenderAngles and ply:GetRenderAngles() or ply:GetAngles()
-		local localPos = WorldToLocal(m:GetTranslation(), angle_zero, ply:GetPos(), Angle(0, ang.y, 0))
-		return localPos / math.max(ply:GetModelScale() or 1, 0.01)
+	local counts = mesh.counts or {}
+	local footCentre, footCentreSource = {}, {}
+	for side, ids in pairs({ left = { bones.lFoot, bones.lToe }, right = { bones.rFoot, bones.rToe } }) do
+		local foot, toe = ids[1], ids[2]
+		if centroids[foot] and (counts[foot] or 0) >= 3 then
+			footCentre[side], footCentreSource[side] = centroids[foot], "foot_verts:" .. counts[foot]
+		elseif toe and centroids[toe] and (counts[toe] or 0) >= 3 then
+			footCentre[side], footCentreSource[side] = centroids[toe], "toe_verts:" .. counts[toe]
+		elseif mesh.lowRegion and mesh.lowRegion[side] then
+			-- nothing skinned to the foot: lowest part of the mesh on that side
+			footCentre[side], footCentreSource[side] = mesh.lowRegion[side], "mesh_low_region"
+		else
+			footCentreSource[side] = "none"
+		end
 	end
-	local footCentre = { left = FootCentre(bones.lFoot, bones.lToe), right = FootCentre(bones.rFoot, bones.rToe) }
+	bones.footCentre, bones.footCentreSource = footCentre, footCentreSource
+
+	local function Ancestry(bone)
+		-- returns the topmost ancestor and whether `target` is on the way
+		local chain = {}
+		local cur = bone
+		for _ = 1, 256 do
+			chain[#chain + 1] = cur
+			local parent = ply:GetBoneParent(cur)
+			if not parent or parent < 0 then break end
+			cur = parent
+		end
+		return chain
+	end
+
 	if mesh.hasWeights and (footCentre.left or footCentre.right) then
 		local radius = mesh.footLength and mesh.footLength > 0 and math.Clamp(mesh.footLength * 0.8, 4, 14) or 7
-		local legBones = { [bones.lThigh] = true, [bones.rThigh] = true, [root] = true }
+		bones.followerRadius = radius
+		local auxSet = {}
+		for _, b in ipairs(auxRoots) do auxSet[b] = true end
+		local chainOf = {
+			[bones.lThigh] = { "left", "thigh" }, [bones.lCalf] = { "left", "calf" }, [bones.lFoot] = { "left", "foot" },
+			[bones.rThigh] = { "right", "thigh" }, [bones.rCalf] = { "right", "calf" }, [bones.rFoot] = { "right", "foot" },
+		}
+
 		local candidates = {}
 		for bone, centre in pairs(centroids) do
-			local inLeg = legBones[bone]
-				or IsAncestor(ply, bones.lThigh, bone, 256) or IsAncestor(ply, bones.rThigh, bone, 256)
-				or (bones.leanBone and (bone == bones.leanBone or IsAncestor(ply, bones.leanBone, bone, 256)))
-			if bone < count and not inLeg and not IsHelperName(ply:GetBoneName(bone)) then
-				local bestSide, bestDist = nil, radius
-				for side, fc in pairs(footCentre) do
-					local d = centre:Distance(fc)
-					if d < bestDist then bestSide, bestDist = side, d end
-				end
-				if bestSide then candidates[bone] = bestSide end
+			local entry = { bone = bone, name = ply:GetBoneName(bone) or tostring(bone), verts = counts[bone] or 0 }
+			analysis[#analysis + 1] = entry
+			local d = { left = footCentre.left and centre:Distance(footCentre.left) or math.huge,
+				right = footCentre.right and centre:Distance(footCentre.right) or math.huge }
+			local side = d.left <= d.right and "left" or "right"
+			local other = side == "left" and "right" or "left"
+			entry.side, entry.dist = side, d[side]
+
+			-- what this bone already inherits: walk up to the first leg chain bone
+			local anchor, anchorSide, underLean = nil, nil, false
+			local chain = Ancestry(bone)
+			for i = 2, #chain do
+				local b = chain[i]
+				if b == bones.leanBone then underLean = true end
+				if chainOf[b] and not anchor then anchor, anchorSide = chainOf[b][2], chainOf[b][1] end
+			end
+			local top = chain[#chain]
+
+			if bone >= count then
+				entry.verdict = "out_of_range"
+			elseif chainOf[bone] or bone == root then
+				entry.verdict = "chain_bone"
+			elseif anchor == "foot" then
+				entry.verdict = "inherits_foot"
+			elseif underLean or bone == bones.leanBone then
+				entry.verdict = "under_lean_bone"
+			elseif IsHelperName(entry.name) then
+				entry.verdict = "helper_name"
+			elseif d[side] >= radius then
+				entry.verdict = "too_far"
+			elseif d[other] < math.huge and d[side] > 0.6 * d[other] then
+				-- about as close to both feet: skirt hem, coat tail, hair
+				entry.verdict = "ambiguous_side"
+			elseif anchor and anchorSide ~= side then
+				entry.verdict = "other_leg"
+			elseif anchor and d[side] >= 0.6 * radius then
+				-- inside a leg chain only bones right at the foot (ankle bits)
+				entry.verdict = "chain_child_far"
+			elseif (mesh.maxZ[bone] or centre.z) > footCentre[side].z + 1.5 * radius then
+				entry.verdict = "too_tall"
+			else
+				entry.verdict = "candidate"
+				entry.anchor = anchor
+				entry.top = top
+				candidates[bone] = entry
 			end
 		end
 
-		local auxSet = {}
-		for _, b in ipairs(auxRoots) do auxSet[b] = true end
-		for bone, side in pairs(candidates) do
+		for bone, entry in pairs(candidates) do
 			-- only the topmost bone of a follower chain, its children come along
 			local nested = false
-			local top, cur = bone, ply:GetBoneParent(bone)
+			local cur = ply:GetBoneParent(bone)
 			while cur and cur >= 0 do
-				if candidates[cur] then nested = true end
-				top = cur
+				if candidates[cur] then nested = true break end
 				cur = ply:GetBoneParent(cur)
 			end
-			if not nested then
+			if nested then
+				entry.verdict = "nested_follower"
+			else
 				local parent = ply:GetBoneParent(bone)
-				local rootLevel = not parent or parent < 0
+				local kind
+				if not parent or parent < 0 then
+					kind = "model"        -- root level: lives in model space
+				elseif entry.anchor then
+					kind = entry.anchor   -- "thigh" / "calf": parent moves with that leg bone
+				elseif entry.top == root or auxSet[entry.top] then
+					kind = "body"         -- parent moves down with the body drop
+				else
+					kind = "static"       -- parent is never moved by the ik
+				end
+				entry.verdict = "follower"
+				entry.kind = kind
 				followers[#followers + 1] = {
 					bone = bone,
-					side = side,
-					parent = rootLevel and -1 or parent,
-					-- its parent already moves down with the body drop
-					shifted = not rootLevel and (top == root or auxSet[top] == true),
+					name = entry.name,
+					side = entry.side,
+					parent = (parent and parent >= 0) and parent or -1,
+					parentName = (parent and parent >= 0) and ply:GetBoneName(parent) or "<model>",
+					kind = kind,
+					reason = string.format("%.1fu from %s foot centre (%s), %d verts", entry.dist, entry.side, footCentreSource[entry.side], entry.verts),
 				}
-				if rootLevel and auxSet[bone] then
+				if kind == "model" and auxSet[bone] then
 					auxSet[bone] = nil
 					for i = #auxRoots, 1, -1 do
 						if auxRoots[i] == bone then table.remove(auxRoots, i) end
@@ -509,9 +674,15 @@ local function BuildBoneSet(ply, model)
 				end
 			end
 		end
+		table.sort(analysis, function(a, b) return (a.dist or math.huge) < (b.dist or math.huge) end)
 	end
+	bones.followerAnalysis = analysis
 	bones.followers = followers
 	bones.auxRoots = auxRoots
+	bones.names = {}
+	for _, key in ipairs({ "root", "pelvis", "leanBone", "lThigh", "lCalf", "lFoot", "lToe", "rThigh", "rCalf", "rFoot", "rToe" }) do
+		if bones[key] then bones.names[key] = ply:GetBoneName(bones[key]) end
+	end
 	bones.boneCount = count
 	bones.valid = true
 	return bones
@@ -605,6 +776,16 @@ function IKFoot.MeasureModel(ply)
 	}
 	bones.profile.info = info
 	return suggested, nil, info
+end
+
+-- expected REST H (animated ankle height above the ground when planted) for
+-- this model at its current scale, from the bind pose. nil when unknown
+function RT.GetExpectedRestHeight(profile, modelScale)
+	local bind = profile and profile.bindAnkle
+	if not bind then return nil end
+	local h = (bind.left + bind.right) * 0.5 * (modelScale or 1)
+	if h <= 0.05 or h ~= h then return nil end
+	return h
 end
 
 -- how much the feet must be raised (+) or lowered (-) so the mesh soles,

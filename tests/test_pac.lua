@@ -75,4 +75,5 @@ for _, withPac in ipairs({ false, true }) do
   check("foreign value kept", math.abs(animPose() - (7 + partZ)) < 1e-6, animPose())
   print(string.format("pac=%s  max drift of the clean read: %.6f", tostring(withPac), drift))
 end
+PAC_FAILS = fails
 print("pac test fails:", fails)

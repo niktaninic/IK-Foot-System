@@ -1,5 +1,9 @@
 IKFoot = IKFoot or {}
 
+IKFoot.VERSION = "0.51"
+-- bump with every change that matters for a bug report: dumps record it
+IKFoot.BUILD = "0.51-diag.1"
+
 -- bump whenever the meaning of a cvar changes. clients with an older stored
 -- version get the affected cvars reset once (see cl_ik_foot_context.lua)
 IKFoot.CONFIG_VERSION = 2
@@ -10,7 +14,7 @@ IKFoot.Config = {
 	entries = {
 		{ key = "enabled",               cvar = "ik_foot",                        type = "bool",  default = true,  min = 0,   max = 1,   decimals = 0, desc = "Enable/Disable IK Foot" },
 		{ key = "lean_enabled",          cvar = "ik_foot_lean",                   type = "bool",  default = false, min = 0,   max = 1,   decimals = 0, desc = "Enable/Disable Body Lean" },
-		{ key = "debug",                 cvar = "ik_foot_debug",                  type = "float", default = 0,     min = 0,   max = 2,   decimals = 0, desc = "Debug Visualization Level" },
+		{ key = "debug",                 cvar = "ik_foot_debug",                  type = "float", default = 0,     min = 0,   max = 2,   decimals = 0, desc = "Debug overlay: 0 off, 1 basic, 2 detailed" },
 		{ key = "ground_distance",       cvar = "ik_foot_ground_distance",        type = "float", default = 70,    min = 20,  max = 100, decimals = 0, desc = "Ground Trace Distance (ref)" },
 		{ key = "smoothing",             cvar = "ik_foot_smoothing",              type = "float", default = 17,    min = 1,   max = 50,  decimals = 0, desc = "Smoothing Factor" },
 		{ key = "leg_length",            cvar = "ik_foot_leg_length",             type = "float", default = 0,     min = 0,   max = 80,  decimals = 0, desc = "Leg Length Override (0 = auto)" },

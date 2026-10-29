@@ -17,17 +17,21 @@ local function IsFiniteAngle(ang)
 	return isangle(ang) and IsFiniteNumber(ang.p) and IsFiniteNumber(ang.y) and IsFiniteNumber(ang.r)
 end
 
-local function GetBoneWorldTransform(ply, bone, plyPos)
+-- maxDist grows with the model scale: a giant's feet are legitimately far
+-- from its origin
+local function GetBoneWorldTransform(ply, bone, plyPos, maxDist)
 	if not bone or bone < 0 then return nil, nil end
 	local matrix = ply:GetBoneMatrix(bone)
 	if not matrix then return nil, nil end
 	local pos = matrix:GetTranslation()
 	local ang = matrix:GetAngles()
-	if IsFiniteVector(pos) and ang and pos:DistToSqr(plyPos) <= (260 * 260) then
+	maxDist = maxDist or 260
+	if IsFiniteVector(pos) and IsFiniteAngle(ang) and pos:DistToSqr(plyPos) <= maxDist * maxDist then
 		return pos, ang
 	end
 	return nil, nil
 end
+Apply.GetBoneWorldTransform = GetBoneWorldTransform
 
 -- every bone the ik may touch for this bone set
 local function ManagedBones(bones)
@@ -66,11 +70,13 @@ end
 function Apply.BuildSkeleton(ply, bones)
 	-- reads the animated pose (ik must be stripped and bones set up first)
 	local plyPos = ply:GetPos()
+	local modelScale = math.max(ply:GetModelScale() or 1, 0.01)
+	local maxDist = 260 * math.max(modelScale, 1)
 	local legs = {}
 	for side, ids in pairs({ left = { bones.lThigh, bones.lCalf, bones.lFoot }, right = { bones.rThigh, bones.rCalf, bones.rFoot } }) do
-		local thighPos, thighAng = GetBoneWorldTransform(ply, ids[1], plyPos)
-		local calfPos, calfAng = GetBoneWorldTransform(ply, ids[2], plyPos)
-		local footPos, footAng = GetBoneWorldTransform(ply, ids[3], plyPos)
+		local thighPos, thighAng = GetBoneWorldTransform(ply, ids[1], plyPos, maxDist)
+		local calfPos, calfAng = GetBoneWorldTransform(ply, ids[2], plyPos, maxDist)
+		local footPos, footAng = GetBoneWorldTransform(ply, ids[3], plyPos, maxDist)
 		if not (thighPos and calfPos and footPos) then return nil end
 		legs[side] = {
 			thighPos = thighPos, thighAng = thighAng,
@@ -79,21 +85,23 @@ function Apply.BuildSkeleton(ply, bones)
 		}
 	end
 
-	-- bone lengths are rigid, measure once per model. only cache sane values,
-	-- on the very first frame the matrices can still be garbage
-	if ply.IKMeasuredModel ~= bones.model then
+	-- bone lengths are rigid, measure once per model AND scale (SetModelScale
+	-- at runtime changes them). only cache sane values, on the very first
+	-- frame the matrices can still be garbage
+	local measureKey = bones.model .. "@" .. string.format("%.3f", modelScale)
+	if ply.IKMeasuredModel ~= measureKey then
 		local l, r = legs.left, legs.right
 		local measured = (l.thighPos:Distance(l.calfPos) + l.calfPos:Distance(l.footPos)
 			+ r.thighPos:Distance(r.calfPos) + r.calfPos:Distance(r.footPos)) * 0.5
-		if measured > 8 then
+		if measured > 8 * math.min(modelScale, 1) then
 			ply.IKMeasuredLegLength = measured
-			ply.IKMeasuredModel = bones.model
+			ply.IKMeasuredModel = measureKey
 		end
 	end
 
 	local spineAng
 	if bones.leanBone then
-		local _, ang = GetBoneWorldTransform(ply, bones.leanBone, plyPos)
+		local _, ang = GetBoneWorldTransform(ply, bones.leanBone, plyPos, maxDist)
 		spineAng = ang
 	end
 
@@ -102,16 +110,15 @@ function Apply.BuildSkeleton(ply, bones)
 	local followers = {}
 	local entAng = ply.GetRenderAngles and ply:GetRenderAngles() or ply:GetAngles()
 	for i, f in ipairs(bones.followers or {}) do
-		local pos, ang = GetBoneWorldTransform(ply, f.bone, plyPos)
-		local parentAng
+		local pos, ang = GetBoneWorldTransform(ply, f.bone, plyPos, maxDist)
+		local parentPos, parentAng
 		if f.parent >= 0 then
-			local _, pa = GetBoneWorldTransform(ply, f.parent, plyPos)
-			parentAng = pa
+			parentPos, parentAng = GetBoneWorldTransform(ply, f.parent, plyPos, maxDist)
 		else
-			parentAng = Angle(0, entAng.y, 0)
+			parentPos, parentAng = Vector(plyPos), Angle(0, entAng.y, 0)
 		end
 		if pos and parentAng then
-			followers[i] = { pos = pos, ang = ang, parentAng = parentAng }
+			followers[i] = { pos = pos, ang = ang, parentPos = parentPos, parentAng = parentAng }
 		end
 	end
 

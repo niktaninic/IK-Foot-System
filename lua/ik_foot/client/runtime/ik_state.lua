@@ -37,7 +37,7 @@ local function NewFoot()
 end
 
 local function NewStepperFoot()
-	return { plant = nil, swing = nil }
+	return { plant = nil, swing = nil, starts = {}, lastReason = nil, blocked = nil }
 end
 
 local function NewState()
@@ -172,7 +172,7 @@ function State.UpdateFootLock(footState, data)
 		local dx = data.rawFootPos.x - footState.lockPos.x
 		local dy = data.rawFootPos.y - footState.lockPos.y
 		local dist2D = math.sqrt(dx * dx + dy * dy)
-		local heightJump = math.abs(contact.position.z - footState.lockPos.z)
+		local heightJump = math.abs(data.groundZ - footState.lockPos.z)
 		local wantsRelease = dist2D > releaseDist
 			or (data.footSpeed > releaseSpeed and not data.idleActive)
 			or (data.plantWeight < 0.4 and not data.idleActive)
@@ -189,15 +189,18 @@ function State.UpdateFootLock(footState, data)
 		local canAcquire = data.idleActive
 			or (data.plantWeight > 0.85 and data.footSpeed <= releaseSpeed * 0.5)
 		if canAcquire then
-			footState.lockPos = Vector(data.rawFootPos.x, data.rawFootPos.y, contact.position.z)
+			-- same height the unlocked path uses (anti-clip highest point or the
+			-- cluster average), otherwise acquiring the lock pops the foot
+			footState.lockPos = Vector(data.rawFootPos.x, data.rawFootPos.y, data.groundZ)
+			footState.lockTime = data.now
 			footState.planted = true
 		end
 	end
 
 	-- drift guard: if the planted contact is far below/above what the traces
 	-- see right under the foot by more than an acquire distance, re-plant
-	if footState.lockPos and math.abs(contact.position.z - footState.lockPos.z) > acquireDist and data.plantWeight > 0.85 then
-		footState.lockPos.z = contact.position.z
+	if footState.lockPos and math.abs(data.groundZ - footState.lockPos.z) > acquireDist and data.plantWeight > 0.85 then
+		footState.lockPos.z = data.groundZ
 	end
 
 	return footState.lockPos and footState.lockPos.z or nil
@@ -208,19 +211,25 @@ end
 -- that straight into the body height, so the body popped a full step at a
 -- time. here we detect those discrete jumps and return them so the smoothed
 -- values can be shifted to stay put in world space.
-function State.ConsumeOriginJump(runtimeState, originZ, velZ, dt, onGround, scale)
+-- velZ must include the velocity of whatever the player stands on, or a fast
+-- lift looks like a stair pop every frame.
+-- returns the jump and whether the move was a teleport (state must be reset)
+function State.ConsumeOriginJump(runtimeState, origin, vel, dt, onGround, scale)
 	local body = runtimeState.body
-	local jump = 0
-	if body.lastOriginZ and onGround and body.wasOnGround then
-		local dz = originZ - body.lastOriginZ
-		local unexplained = dz - velZ * dt
-		if math.abs(unexplained) >= 2.5 * scale and math.abs(dz) <= 40 * scale then
-			jump = dz
+	local jump, teleport = 0, false
+	if body.lastOrigin then
+		local delta = origin - body.lastOrigin
+		local unexplained = delta - vel * dt
+		-- further than any step, slope or network correction can explain
+		if unexplained:Length() > 48 * scale then
+			teleport = true
+		elseif onGround and body.wasOnGround and math.abs(unexplained.z) >= 2.5 * scale then
+			jump = delta.z
 		end
 	end
-	body.lastOriginZ = originZ
+	body.lastOrigin = Vector(origin)
 	body.wasOnGround = onGround
-	return jump
+	return jump, teleport
 end
 
 -- critically damped spring (same formula as unity's SmoothDamp)
@@ -243,16 +252,39 @@ end
 
 -- tracks how high the animated foot bone sits above the ground when the foot
 -- is planted. converges to the lowest planted height of the animation.
-function State.UpdateRestHeight(runtimeState, footHeight, dt, seed)
-	local rest = runtimeState.restHeight or seed
+-- `expected` (bind pose ankle height, may be nil) bounds what is believable.
+-- returns the new value and whether the sample was used (+ reason)
+function State.UpdateRestHeight(runtimeState, footHeight, dt, seed, expected, scale)
+	local rest = runtimeState.restHeight or expected or seed
 	if not IsFiniteNumber(footHeight) then
 		runtimeState.restHeight = rest
-		return rest
+		return rest, false, "nan_sample"
+	end
+	if expected then
+		-- a planted ankle far from the model's own ankle height is a bad read
+		-- (wrong pose, another addon moving bones), not something to learn
+		local lo, hi = expected * 0.5 - 0.5 * scale, expected * 1.6 + 1 * scale
+		if footHeight < lo or footHeight > hi then
+			runtimeState.restHeight = rest
+			return rest, false, "outside_expected"
+		end
+	end
+	-- a planted ankle that suddenly reads far from the learned value is only
+	-- believed once it persists: a real change (different idle, crouch walk)
+	-- stays, a bad read (pose glitch, another addon for a moment) does not
+	if runtimeState.restHeight and math.abs(footHeight - rest) > 1.5 * scale then
+		runtimeState.restOutlierTime = (runtimeState.restOutlierTime or 0) + dt
+		if runtimeState.restOutlierTime < 1 then
+			runtimeState.restHeight = rest
+			return rest, false, "outlier_pending"
+		end
+	else
+		runtimeState.restOutlierTime = 0
 	end
 	local rate = footHeight < rest and 1 / 0.6 or 1 / 3
 	rest = rest + (footHeight - rest) * (1 - math.exp(-dt * rate))
 	runtimeState.restHeight = rest
-	return rest
+	return rest, true, "ok"
 end
 
 -- =====================================================================
@@ -320,7 +352,7 @@ end
 -- returns world ground positions (sole contact) for each foot, plus info.
 -- data: scan, origin, dir, right, speed, dt, scale, legLength, treadsPerStep,
 --       maxCadence, lift, animFeet = {left = pos, right = pos}, lateral = {left, right},
---       sampleGround(pos) -> z or nil (precise ground at a placement)
+--       groundAt(pos) -> z, flat (ground under a placement, heel/centre/toe agree)
 function State.UpdateStepper(runtimeState, data)
 	local stepper = runtimeState.stepper
 	local scan = data.scan
@@ -378,11 +410,33 @@ function State.UpdateStepper(runtimeState, data)
 	end
 
 	local sBody = RT.Ground.ScanCoord(scan, data.origin)
+	local now = data.now or 0
+	local function NoteStart(f, reason)
+		f.lastReason = reason
+		f.blocked = nil
+		f.starts[#f.starts + 1] = now
+		while #f.starts > 6 do table.remove(f.starts, 1) end
+	end
 	local function Place(side, treadIndex)
 		local tread = scan.treads[math.Clamp(treadIndex, 1, #scan.treads)]
 		local pos, s = PlacementOnTread(scan, tread, data.lateral[side], data.right, footLen)
-		local z = data.sampleGround(pos)
-		if z and math.abs(z - tread.z) < 4 * data.scale then pos.z = z end
+		-- the traces right under the foot are the truth: the scan only samples
+		-- its centre line, and with the body turned the foot's lateral offset
+		-- and its own length can cross a tread edge (old code: kept the scan's
+		-- height and buried the foot a step deep; a single hull trace: picked
+		-- the upper tread and left the foot hanging over the lower one).
+		-- slide along the stairs until heel, centre and toe share one surface
+		local fallbackZ
+		for _, off in ipairs({ 0, 2, -2, 4, -4, 6, -6 }) do
+			local p = pos + scan.dir * (off * data.scale)
+			local z, flat = data.groundAt(p)
+			if z and not fallbackZ then fallbackZ = z end
+			if z and flat then
+				p.z = z
+				return p, s + off * data.scale
+			end
+		end
+		if fallbackZ then pos.z = fallbackZ end
 		return pos, s
 	end
 
@@ -394,6 +448,7 @@ function State.UpdateStepper(runtimeState, data)
 		if not f.plant and not f.swing then
 			local s = math.Clamp(RT.Ground.ScanCoord(scan, data.animFeet[side]), sBody - seedRange, sBody + seedRange)
 			f.plant = Place(side, RT.Ground.TreadIndexAt(scan, s) or 1)
+			f.lastReason = "seed"
 		end
 	end
 
@@ -409,6 +464,9 @@ function State.UpdateStepper(runtimeState, data)
 			if dx * dx + dy * dy > reach * reach then
 				local s = math.Clamp(RT.Ground.ScanCoord(scan, data.animFeet[side]), sBody - seedRange, sBody + seedRange)
 				f.plant = Place(side, RT.Ground.TreadIndexAt(scan, s) or 1)
+				-- a teleport of the foot: visible pop, worth knowing about
+				f.lastReason = "replant_out_of_reach"
+				if data.onEvent then data.onEvent(side, "replant", { dist = math.sqrt(dx * dx + dy * dy), reach = reach }) end
 			end
 		end
 	end
@@ -428,8 +486,28 @@ function State.UpdateStepper(runtimeState, data)
 		local trail, lead = stepper.feet[trailSide], stepper.feet[leadSide]
 
 		local behind = sBody - sTrail
-		local leadReady = not lead.swing or (lead.swing.t >= 0.65 and behind > reach * 0.55)
+		-- the trailing foot may lift while the lead is still landing when it is
+		-- getting far behind, and must lift (both feet briefly in the air, a
+		-- hop) before it would fall out of reach and have to be teleported
+		local leadReady = not lead.swing or (lead.swing.t >= 0.65 and behind > reach * 0.55) or behind > reach * 0.8
 		local wantsStep = sBody >= sLead - 0.25 * strideAdvance or behind > reach * 0.7
+		-- a settle step started while standing should finish with the body
+		-- once the player walks off again
+		for _, f in pairs(stepper.feet) do
+			if f.swing and f.swing.settle then
+				f.swing.settle = nil
+				f.swing.bodyStart = Vector(data.origin)
+				f.swing.dir = Vector(scan.dir)
+				f.swing.bodyTravel = 0.5 * depth
+			end
+		end
+		if trail.swing then
+			trail.blocked = nil
+		elseif not leadReady then
+			trail.blocked = "waiting_for_lead_swing"
+		elseif not wantsStep then
+			trail.blocked = "body_not_over_lead"
+		end
 		if not trail.swing and leadReady and wantsStep then
 			local leadIdx = RT.Ground.TreadIndexAt(scan, sLead) or 1
 			local targetIdx = leadIdx + treadsPerStep
@@ -444,7 +522,10 @@ function State.UpdateStepper(runtimeState, data)
 				toPos.z = lastTread.z
 			end
 			-- never step further than the leg can reach from where the body will be
-			if sTo - sBody < reach then
+			if sTo - sBody >= reach then
+				trail.blocked = "target_out_of_reach"
+			else
+				NoteStart(trail, behind > reach * 0.7 and "gait_far_behind" or (lead.swing and "gait_overlap" or "gait"))
 				trail.swing = {
 					from = trail.plant,
 					to = toPos,
@@ -476,8 +557,12 @@ function State.UpdateStepper(runtimeState, data)
 			local toPos, sTo = Place(worstSide, RT.Ground.TreadIndexAt(scan, sBody) or 1)
 			-- only if it is a real improvement (long landings place the foot
 			-- near the edge, which must not cause an endless re-step)
-			if math.abs(sTo - sBody) < worstDist - 1 then
+			if math.abs(sTo - sBody) >= worstDist - 1 then
+				f.blocked = "settle_no_better_spot"
+			else
+				NoteStart(f, "settle")
 				f.swing = {
+					settle = true,
 					from = f.plant,
 					to = toPos,
 					t = 0,
