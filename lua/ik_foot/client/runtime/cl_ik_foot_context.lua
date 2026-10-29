@@ -5,6 +5,8 @@ if not IKFoot or not IKFoot.Config then return end
 IKFoot.Runtime = IKFoot.Runtime or {}
 local RT = IKFoot.Runtime
 
+RT.REFERENCE_LEG_LENGTH = 45
+
 RT.Colors = {
 	white = Color(255, 255, 255),
 	green = Color(0, 255, 0),
@@ -18,28 +20,64 @@ for _, entry in ipairs(IKFoot.Config.entries) do
 	RT.CVars[entry.key] = CreateClientConVar(entry.cvar, tostring(default), true, true, entry.desc)
 end
 
+-- one-time migration. older versions stored model-specific values in cvars
+-- (leg length, double-scaled drops etc) that mean something else now
+do
+	local versionCvar = CreateClientConVar("ik_foot_config_version", "0", true, false, "Internal: IK Foot config layout version")
+	if versionCvar:GetInt() < IKFoot.CONFIG_VERSION then
+		local resetKeys = { "leg_length", "trace_start_offset", "max_body_drop", "foot_rotation_scale",
+			"extra_body_drop", "extra_body_drop_uneven", "sole_offset", "stair_step_min_height", "stair_step_max_height" }
+		for _, key in ipairs(resetKeys) do
+			local entry = IKFoot.Config.byKey[key]
+			if entry then
+				local value = entry.default
+				if entry.type == "bool" then value = value and 1 or 0 end
+				RunConsoleCommand(entry.cvar, tostring(value))
+			end
+		end
+		RunConsoleCommand("ik_foot_config_version", tostring(IKFoot.CONFIG_VERSION))
+	end
+end
+
 function RT.GetIKParam(ply, key)
+	local entry = IKFoot.Config.byKey[key]
 	if ply == LocalPlayer() then
 		local cvar = RT.CVars[key]
-		if not cvar then
-			local entry = IKFoot.Config.byKey[key]
-			return entry and entry.default or 0
-		end
-		return cvar:GetFloat()
+		if not cvar then return entry and tonumber(entry.default) or 0 end
+		return entry and IKFoot.Config.ClampNumber(entry, cvar:GetFloat()) or cvar:GetFloat()
 	end
-	return ply:GetNWFloat(IKFoot.Config.NWName(key), 0)
+	local default = entry and entry.default or 0
+	if isbool(default) then default = default and 1 or 0 end
+	return ply:GetNWFloat(IKFoot.Config.NWName(key), default)
 end
 
 function RT.GetIKParamBool(ply, key)
+	local entry = IKFoot.Config.byKey[key]
 	if ply == LocalPlayer() then
 		local cvar = RT.CVars[key]
-		if not cvar then
-			local entry = IKFoot.Config.byKey[key]
-			return entry and entry.default or false
-		end
+		if not cvar then return entry and entry.default and true or false end
 		return cvar:GetBool()
 	end
-	return ply:GetNWBool(IKFoot.Config.NWName(key), false)
+	-- default to the config default until the server has networked a value
+	return ply:GetNWBool(IKFoot.Config.NWName(key), entry and entry.default and true or false)
+end
+
+-- all params for one player, read once per frame instead of ~30 lookups per call site
+function RT.GetParams(ply)
+	local frame = FrameNumber()
+	local cache = ply.IKParamCache
+	if cache and cache._frame == frame then return cache end
+	cache = cache or {}
+	for _, entry in ipairs(IKFoot.Config.entries) do
+		if entry.type == "bool" then
+			cache[entry.key] = RT.GetIKParamBool(ply, entry.key)
+		else
+			cache[entry.key] = RT.GetIKParam(ply, entry.key)
+		end
+	end
+	cache._frame = frame
+	ply.IKParamCache = cache
+	return cache
 end
 
 -- pac3 compat. if pac is loaded we use its bone api instead
@@ -97,17 +135,20 @@ end
 local NEAR_EPS_VEC = 0.01
 local NEAR_EPS_ANG = 0.05
 
-local function VecNear(a, b)
-	return math.abs(a.x - b.x) <= NEAR_EPS_VEC
-		and math.abs(a.y - b.y) <= NEAR_EPS_VEC
-		and math.abs(a.z - b.z) <= NEAR_EPS_VEC
+local function VecNear(a, b, eps)
+	return math.abs(a.x - b.x) <= eps
+		and math.abs(a.y - b.y) <= eps
+		and math.abs(a.z - b.z) <= eps
 end
 
-local function AngNear(a, b)
-	return math.abs(math.AngleDifference(a.p, b.p)) <= NEAR_EPS_ANG
-		and math.abs(math.AngleDifference(a.y, b.y)) <= NEAR_EPS_ANG
-		and math.abs(math.AngleDifference(a.r, b.r)) <= NEAR_EPS_ANG
+local function AngNear(a, b, eps)
+	return math.abs(math.AngleDifference(a.p, b.p)) <= eps
+		and math.abs(math.AngleDifference(a.y, b.y)) <= eps
+		and math.abs(math.AngleDifference(a.r, b.r)) <= eps
 end
+
+RT.VecNear = VecNear
+RT.AngNear = AngNear
 
 function RT.ApplyBlendedBonePosition(ply, bone, offset)
 	if bone == nil then return end
@@ -120,7 +161,7 @@ function RT.ApplyBlendedBonePosition(ply, bone, offset)
 
 	local current = RT.GetCurrentBonePosition(ply, bone)
 	local base = current
-	if entry.final and VecNear(current, entry.final) then
+	if entry.final and VecNear(current, entry.final, NEAR_EPS_VEC) then
 		base = current - entry.applied
 	end
 
@@ -141,7 +182,7 @@ function RT.ApplyBlendedBoneAngles(ply, bone, offset)
 
 	local current = RT.GetCurrentBoneAngles(ply, bone)
 	local base = current
-	if entry.final and AngNear(current, entry.final) then
+	if entry.final and AngNear(current, entry.final, NEAR_EPS_ANG) then
 		base = Angle(current.p - entry.applied.p, current.y - entry.applied.y, current.r - entry.applied.r)
 	end
 
@@ -151,329 +192,369 @@ function RT.ApplyBlendedBoneAngles(ply, bone, offset)
 	entry.final = Angle(final)
 end
 
--- bone ids. cached per model so we dont look them up every frame
+-- =====================================================================
+-- bone detection
+-- =====================================================================
+-- the old version assumed bone 0 is the body root and moved EVERY bone with
+-- parent == -1 together with it. on models with extra bones (hair roots,
+-- helper/ik/attachment bones, bones merged in from $includemodel) that meant
+-- moving things that should never be touched. now:
+--   * the body root is the topmost ancestor of the thigh bones
+--   * extra roots only follow the body if mesh vertices are actually skinned
+--     to them (or their children) and they are not obvious helper bones
 
--- base bone count per model path. weapon bone merge adds bones AFTER
--- the models native bones so we need to know where the models bones end
-local ModelBaseBoneCount = {}
+local BONE_NAMES = {
+	pelvis = { "ValveBiped.Bip01_Pelvis", "Bip01 Pelvis", "bip_pelvis", "mixamorig:Hips", "Hips", "pelvis" },
+	lThigh = { "ValveBiped.Bip01_L_Thigh", "Bip01 L Thigh", "bip_hip_L", "mixamorig:LeftUpLeg", "LeftUpLeg", "thigh_l", "L_Thigh" },
+	rThigh = { "ValveBiped.Bip01_R_Thigh", "Bip01 R Thigh", "bip_hip_R", "mixamorig:RightUpLeg", "RightUpLeg", "thigh_r", "R_Thigh" },
+	lCalf  = { "ValveBiped.Bip01_L_Calf", "Bip01 L Calf", "bip_knee_L", "mixamorig:LeftLeg", "LeftLeg", "calf_l", "L_Calf" },
+	rCalf  = { "ValveBiped.Bip01_R_Calf", "Bip01 R Calf", "bip_knee_R", "mixamorig:RightLeg", "RightLeg", "calf_r", "R_Calf" },
+	lFoot  = { "ValveBiped.Bip01_L_Foot", "Bip01 L Foot", "bip_foot_L", "mixamorig:LeftFoot", "LeftFoot", "foot_l", "L_Foot" },
+	rFoot  = { "ValveBiped.Bip01_R_Foot", "Bip01 R Foot", "bip_foot_R", "mixamorig:RightFoot", "RightFoot", "foot_r", "R_Foot" },
+	lToe   = { "ValveBiped.Bip01_L_Toe0", "Bip01 L Toe0", "bip_toe_L", "mixamorig:LeftToeBase", "LeftToeBase", "ball_l" },
+	rToe   = { "ValveBiped.Bip01_R_Toe0", "Bip01 R Toe0", "bip_toe_R", "mixamorig:RightToeBase", "RightToeBase", "ball_r" },
+	spine  = { "ValveBiped.Bip01_Spine1", "ValveBiped.Bip01_Spine", "Bip01 Spine1", "bip_spine_1", "mixamorig:Spine1", "spine_01" },
+}
 
-local function GetBaseBoneCount(model)
-	if ModelBaseBoneCount[model] then return ModelBaseBoneCount[model] end
-	local mdl = ClientsideModel(model, RENDERGROUP_OTHER)
-	if IsValid(mdl) then
-		local count = mdl:GetBoneCount() or 0
-		mdl:Remove()
-		ModelBaseBoneCount[model] = count
-		return count
+-- names of bones that never carry visible body geometry worth moving
+local HELPER_PATTERNS = { "attach", "weapon", "wpn", "^ik", "_ik", "camera", "cam_", "prop", "helper", "dummy", "null", "nub", "lock", "target", "forward", "physics" }
+
+local function LookupFirst(ply, names)
+	for _, name in ipairs(names) do
+		local bone = ply:LookupBone(name)
+		if bone and bone >= 0 then return bone end
 	end
-	return 0
+	return nil
 end
 
--- find auxiliary root bones (hair, eyebrows, lashes etc) that arent
--- children of bone 0. only scans the models native bones to avoid
--- picking up weapon bones from bone merge
-function RT.FindAuxRootBones(ply, model)
-	local baseBoneCount = GetBaseBoneCount(model)
+local function IsAncestor(ply, ancestor, bone, maxDepth)
+	local cur = bone
+	for _ = 1, maxDepth do
+		cur = ply:GetBoneParent(cur)
+		if not cur or cur < 0 then return false end
+		if cur == ancestor then return true end
+	end
+	return false
+end
+
+local function SideOf(lname)
+	if string.find(lname, "left", 1, true) then return "l" end
+	if string.find(lname, "right", 1, true) then return "r" end
+	local padded = "_" .. string.gsub(lname, "[%s%.:]", "_") .. "_"
+	if string.find(padded, "_l_", 1, true) then return "l" end
+	if string.find(padded, "_r_", 1, true) then return "r" end
+	return nil
+end
+
+local function IsTwistBone(lname)
+	return string.find(lname, "twist", 1, true) or string.find(lname, "roll", 1, true)
+		or string.find(lname, "helper", 1, true) or string.find(lname, "jiggle", 1, true)
+end
+
+-- fallback for rigs with unusual names: find a "foot" bone per side and walk up
+-- the hierarchy (skipping twist helpers) to get calf and thigh
+local function DetectLegChainByHierarchy(ply, side)
+	local count = ply:GetBoneCount() or 0
+	for i = 0, count - 1 do
+		local lname = string.lower(ply:GetBoneName(i) or "")
+		if (string.find(lname, "foot", 1, true) or string.find(lname, "ankle", 1, true)) and SideOf(lname) == side and not IsTwistBone(lname) then
+			local calf = ply:GetBoneParent(i)
+			while calf and calf >= 0 and IsTwistBone(string.lower(ply:GetBoneName(calf) or "")) do
+				calf = ply:GetBoneParent(calf)
+			end
+			local thigh = calf and calf >= 0 and ply:GetBoneParent(calf) or nil
+			while thigh and thigh >= 0 and IsTwistBone(string.lower(ply:GetBoneName(thigh) or "")) do
+				thigh = ply:GetBoneParent(thigh)
+			end
+			if calf and calf >= 0 and thigh and thigh >= 0 then
+				return thigh, calf, i
+			end
+		end
+	end
+	return nil
+end
+
+-- =====================================================================
+-- model profile (mesh analysis). cached per model path for everybody
+-- =====================================================================
+
+IKFoot.ModelAnalysisCache = IKFoot.ModelAnalysisCache or {}
+
+local function IsHelperName(name)
+	local lname = string.lower(name or "")
+	for _, pattern in ipairs(HELPER_PATTERNS) do
+		if string.find(lname, pattern) then return true end
+	end
+	return false
+end
+
+-- scans the mesh once: which bones actually deform vertices, and where the
+-- soles of the feet are in bind pose
+local function AnalyzeMesh(model, footBones)
+	local result = { weighted = {}, hasWeights = false, footSoleZ = nil, lowestZ = nil, footLength = 0, footWidth = 0, footVerts = 0 }
+	local meshes = util.GetModelMeshes(model)
+	if not meshes then return result end
+
+	local lowestZ = math.huge
+	local footMinZ = math.huge
+	local footMinX, footMaxX, footMinY, footMaxY = math.huge, -math.huge, math.huge, -math.huge
+	local footVerts = 0
+
+	for _, group in ipairs(meshes) do
+		for _, v in ipairs(group.verticies or group.triangles or {}) do
+			local pos = v.pos
+			if pos then
+				if pos.z < lowestZ then lowestZ = pos.z end
+				local onFoot = false
+				for _, w in ipairs(v.weights or {}) do
+					local bone = w.bone
+					if bone and (w.weight or 0) > 0.01 then
+						result.weighted[bone] = true
+						result.hasWeights = true
+						if footBones[bone] and (w.weight or 0) >= 0.3 then onFoot = true end
+					end
+				end
+				if onFoot then
+					footVerts = footVerts + 1
+					if pos.z < footMinZ then footMinZ = pos.z end
+					if pos.x < footMinX then footMinX = pos.x end
+					if pos.x > footMaxX then footMaxX = pos.x end
+					if pos.y < footMinY then footMinY = pos.y end
+					if pos.y > footMaxY then footMaxY = pos.y end
+				end
+			end
+		end
+	end
+
+	if lowestZ < math.huge then result.lowestZ = lowestZ end
+	if footVerts >= 8 then
+		result.footSoleZ = footMinZ
+		result.footVerts = footVerts
+		-- playermodels face +X in model space. Y spans both feet
+		result.footLength = footMaxX - footMinX
+		result.footWidth = footMaxY - footMinY
+	end
+	return result
+end
+
+local function BuildBoneSet(ply, model)
+	local bones = { model = model, valid = false }
+
+	bones.lThigh = LookupFirst(ply, BONE_NAMES.lThigh)
+	bones.rThigh = LookupFirst(ply, BONE_NAMES.rThigh)
+	bones.lCalf  = LookupFirst(ply, BONE_NAMES.lCalf)
+	bones.rCalf  = LookupFirst(ply, BONE_NAMES.rCalf)
+	bones.lFoot  = LookupFirst(ply, BONE_NAMES.lFoot)
+	bones.rFoot  = LookupFirst(ply, BONE_NAMES.rFoot)
+
+	if not (bones.lThigh and bones.lCalf and bones.lFoot) then
+		bones.lThigh, bones.lCalf, bones.lFoot = DetectLegChainByHierarchy(ply, "l")
+	end
+	if not (bones.rThigh and bones.rCalf and bones.rFoot) then
+		bones.rThigh, bones.rCalf, bones.rFoot = DetectLegChainByHierarchy(ply, "r")
+	end
+
+	if not (bones.lThigh and bones.lCalf and bones.lFoot and bones.rThigh and bones.rCalf and bones.rFoot) then
+		return bones
+	end
+
+	-- reject garbage chains (e.g. a name match on an unrelated bone)
+	if not (IsAncestor(ply, bones.lThigh, bones.lCalf, 3) and IsAncestor(ply, bones.lCalf, bones.lFoot, 3)
+		and IsAncestor(ply, bones.rThigh, bones.rCalf, 3) and IsAncestor(ply, bones.rCalf, bones.rFoot, 3)) then
+		return bones
+	end
+
+	bones.lToe = LookupFirst(ply, BONE_NAMES.lToe)
+	bones.rToe = LookupFirst(ply, BONE_NAMES.rToe)
+	bones.pelvis = LookupFirst(ply, BONE_NAMES.pelvis)
+	bones.leanBone = LookupFirst(ply, BONE_NAMES.spine)
+
+	-- body root = topmost ancestor of the legs. NOT blindly bone 0
+	local root = bones.lThigh
+	for _ = 1, 256 do
+		local parent = ply:GetBoneParent(root)
+		if not parent or parent < 0 then break end
+		root = parent
+	end
+	bones.root = root
+
+	-- lean bone must sit between the root and the head, never inside a leg chain
+	if bones.leanBone and (bones.leanBone == bones.lThigh or bones.leanBone == bones.rThigh) then
+		bones.leanBone = nil
+	end
+
+	local footBones = { [bones.lFoot] = true, [bones.rFoot] = true }
+	if bones.lToe then footBones[bones.lToe] = true end
+	if bones.rToe then footBones[bones.rToe] = true end
+
+	local profile = IKFoot.ModelAnalysisCache[model]
+	if not profile then
+		profile = { mesh = AnalyzeMesh(model, footBones) }
+		IKFoot.ModelAnalysisCache[model] = profile
+	end
+	bones.profile = profile
+
+	-- extra root bones that must follow the body drop
+	local count = ply:GetBoneCount() or 0
 	local auxRoots = {}
-	if baseBoneCount <= 0 then return auxRoots end
-	for i = 1, baseBoneCount - 1 do
-		if ply:GetBoneParent(i) == -1 then
-			local name = ply:GetBoneName(i)
-			if name and name ~= "" then
+	local mesh = profile.mesh
+	if mesh.hasWeights then
+		-- a root counts as "visible" if it or any bone under it is skinned
+		local visibleRoot = {}
+		for bone in pairs(mesh.weighted) do
+			local cur, guard = bone, 0
+			while cur and cur >= 0 and guard < 256 do
+				local parent = ply:GetBoneParent(cur)
+				if not parent or parent < 0 then
+					visibleRoot[cur] = true
+					break
+				end
+				cur = parent
+				guard = guard + 1
+			end
+		end
+		for i = 0, count - 1 do
+			if i ~= root and ply:GetBoneParent(i) == -1 and visibleRoot[i] and not IsHelperName(ply:GetBoneName(i)) then
 				auxRoots[#auxRoots + 1] = i
 			end
 		end
 	end
-	return auxRoots
+	-- without weight data we cant tell hair from helpers, so we leave them alone
+	bones.auxRoots = auxRoots
+	bones.boneCount = count
+	bones.valid = true
+	return bones
 end
 
 function RT.GetIKBones(ply)
 	local model = ply:GetModel()
 	local bones = ply.IKBones
-	if bones and bones.model == model then return bones end
+	if bones and bones.model == model and bones.boneCount == (ply:GetBoneCount() or 0) then return bones end
 
-	if bones then ply.IKBlendState = nil end
+	-- model changed: undo whatever we did to the OLD bone indices before forgetting them,
+	-- manipulations are stored per index and would otherwise corrupt the new model
+	if bones and RT.Apply and RT.Apply.StripIKFromBones then
+		RT.Apply.StripIKFromBones(ply, bones)
+	end
+	if bones then
+		ply.IKBlendState = nil
+		if RT.State then RT.State.Reset(ply) end
+	end
 
-	bones = {
-		model  = model,
-		lFoot  = ply:LookupBone("ValveBiped.Bip01_L_Foot"),
-		rFoot  = ply:LookupBone("ValveBiped.Bip01_R_Foot"),
-		lCalf  = ply:LookupBone("ValveBiped.Bip01_L_Calf"),
-		rCalf  = ply:LookupBone("ValveBiped.Bip01_R_Calf"),
-		lThigh = ply:LookupBone("ValveBiped.Bip01_L_Thigh"),
-		rThigh = ply:LookupBone("ValveBiped.Bip01_R_Thigh"),
-		-- Spine1 preferred; falls back to Spine if the model only has the lower spine bone.
-		-- Roll on bone 0 (Bip01) has no visible effect since it's the world-reference root.
-		leanBone = ply:LookupBone("ValveBiped.Bip01_Spine1") or ply:LookupBone("ValveBiped.Bip01_Spine"),
-		auxRoots = RT.FindAuxRootBones(ply, model),
-		baseBoneCount = GetBaseBoneCount(model),
-	}
-
+	bones = BuildBoneSet(ply, model)
 	ply.IKBones = bones
 	return bones
 end
 
--- detect if weapon bone merge is active by comparing bone count
--- weapon models add bones on top of the models native ones
-function RT.IsBoneMergeActive(ply, bones)
-	local base = bones.baseBoneCount or 0
-	if base <= 0 then return false end
-	return (ply:GetBoneCount() or 0) > base
-end
-
--- zero out aux bone manipulations. must be called when bone merge
--- activates or the stale ManipulateBone values corrupt SetupBones
-function RT.ClearAuxBoneManipulations(ply, bones)
-	local auxRoots = bones.auxRoots
-	if not auxRoots or #auxRoots == 0 then return end
-	local blendState = ply.IKBlendState
-	for _, auxBone in ipairs(auxRoots) do
-		RT.SetBonePosition(ply, auxBone, Vector())
-		RT.SetBoneAngles(ply, auxBone, Angle())
-		if blendState then
-			blendState.pos[auxBone] = nil
-			blendState.ang[auxBone] = nil
-		end
-	end
-end
-
 function RT.CanManipulateBones(ply)
 	if ply:InVehicle() then return false end
-	if istable(ActionGmod) and ply:IsDive() then return false end
-	if istable(prone) and ply:IsProne() then return false end
+	if ply:GetMoveType() == MOVETYPE_NOCLIP or ply:GetMoveType() == MOVETYPE_LADDER then return false end
+	if isfunction(ply.IsDive) and ply:IsDive() then return false end
+	if isfunction(ply.IsProne) and ply:IsProne() then return false end
 	return true
 end
-
--- model mesh cache. wiped on reload so formula changes take effect
-IKFoot.ModelAnalysisCache = {}
 
 function IKFoot.InvalidateModelCache(model)
 	if model then
 		IKFoot.ModelAnalysisCache[model] = nil
-		ModelBaseBoneCount[model] = nil
 	else
 		IKFoot.ModelAnalysisCache = {}
-		ModelBaseBoneCount = {}
 	end
 end
 
+-- describes the current model. used by auto-detect and the "suggest" button
 function IKFoot.MeasureModel(ply)
-	-- scans the model mesh and bones to figure out ik settings
-	-- this is basically black magic at this point
 	if not IsValid(ply) then return nil, "Invalid player" end
-
 	local model = ply:GetModel()
 	if not model or model == "" then return nil, "No model" end
 
-	local cached = IKFoot.ModelAnalysisCache[model]
-	if cached then return cached.suggested, nil, cached.info end
-
-	local lFootBone  = ply:LookupBone("ValveBiped.Bip01_L_Foot")
-	local rFootBone  = ply:LookupBone("ValveBiped.Bip01_R_Foot")
-	local lCalfBone  = ply:LookupBone("ValveBiped.Bip01_L_Calf")
-	local rCalfBone  = ply:LookupBone("ValveBiped.Bip01_R_Calf")
-	local lThighBone = ply:LookupBone("ValveBiped.Bip01_L_Thigh")
-	local rThighBone = ply:LookupBone("ValveBiped.Bip01_R_Thigh")
-	local lToeBone   = ply:LookupBone("ValveBiped.Bip01_L_Toe0")
-	local rToeBone   = ply:LookupBone("ValveBiped.Bip01_R_Toe0")
-
-	if not lFootBone or not rFootBone or not lCalfBone or not rCalfBone or not lThighBone or not rThighBone then
-		return nil, "Model has no ValveBiped leg bones"
-	end
+	local bones = RT.GetIKBones(ply)
+	if not bones.valid then return nil, "Model has no usable leg bones" end
 
 	ply:SetupBones()
-
-	local function BonePosAng(bone)
-		if not bone then return nil, nil end
-		local mat = ply:GetBoneMatrix(bone)
-		if mat then return mat:GetTranslation(), mat:GetAngles() end
-		return ply:GetBonePosition(bone)
+	local function Pos(bone)
+		local m = bone and ply:GetBoneMatrix(bone)
+		return m and m:GetTranslation()
 	end
-
-	local lThighPos          = BonePosAng(lThighBone)
-	local lCalfPos           = BonePosAng(lCalfBone)
-	local lFootPos, lFootAng = BonePosAng(lFootBone)
-	local rThighPos          = BonePosAng(rThighBone)
-	local rCalfPos           = BonePosAng(rCalfBone)
-	local rFootPos, rFootAng = BonePosAng(rFootBone)
-	local lToePos            = BonePosAng(lToeBone)
-	local rToePos            = BonePosAng(rToeBone)
-
-	if not lThighPos or not lCalfPos or not lFootPos or not rThighPos or not rCalfPos or not rFootPos then
+	local lThigh, lCalf, lFoot = Pos(bones.lThigh), Pos(bones.lCalf), Pos(bones.lFoot)
+	local rThigh, rCalf, rFoot = Pos(bones.rThigh), Pos(bones.rCalf), Pos(bones.rFoot)
+	if not (lThigh and lCalf and lFoot and rThigh and rCalf and rFoot) then
 		return nil, "Could not read bone positions"
 	end
 
-	-- measure the leg bones. this math took ages to get right
-	local lUpperLeg = lThighPos:Distance(lCalfPos)
-	local lLowerLeg = lCalfPos:Distance(lFootPos)
-	local rUpperLeg = rThighPos:Distance(rCalfPos)
-	local rLowerLeg = rCalfPos:Distance(rFootPos)
-	local legLength = (lUpperLeg + lLowerLeg + rUpperLeg + rLowerLeg) * 0.5
+	local upper = (lThigh:Distance(lCalf) + rThigh:Distance(rCalf)) * 0.5
+	local lower = (lCalf:Distance(lFoot) + rCalf:Distance(rFoot)) * 0.5
+	local legLength = upper + lower
+	local modelScale = math.max(ply:GetModelScale() or 1, 0.01)
+	local mesh = bones.profile.mesh
+	local soleCorrection = RT.GetSoleCorrection(bones.profile, modelScale)
 
-	-- figure out which way the foot points. harder than it sounds
-	local lFootFwd, rFootFwd = Vector(1, 0, 0), Vector(1, 0, 0)
-	if lFootAng then
-		lFootFwd = lFootAng:Forward()
-		lFootFwd.z = 0
-		if lFootFwd:LengthSqr() > 0.001 then lFootFwd:Normalize() else lFootFwd = Vector(1, 0, 0) end
-	end
-	if rFootAng then
-		rFootFwd = rFootAng:Forward()
-		rFootFwd.z = 0
-		if rFootFwd:LengthSqr() > 0.001 then rFootFwd:Normalize() else rFootFwd = Vector(1, 0, 0) end
-	end
-
-	local footBoneLength = 0
-	if lToePos and rToePos then
-		footBoneLength = (lFootPos:Distance(lToePos) + rFootPos:Distance(rToePos)) * 0.5
-	end
-
-	local plyZ = ply:GetPos().z
-	local footBoneHeight = ((lFootPos.z - plyZ) + (rFootPos.z - plyZ)) * 0.5
-	local thighHeight = ((lThighPos.z - plyZ) + (rThighPos.z - plyZ)) * 0.5
-
-	-- scan actual mesh verts to figure out where the feet really are
-	local meshes = util.GetModelMeshes(model)
-	local meshBottomZ = 0
-	local footMeshLength, footMeshWidth = 0, 0
-	local footVertCount = 0
-
-	if meshes then
-		local lowestZ = math.huge
-		local footRegionVerts = {}
-		local footZThresholdHigh = footBoneHeight + 4
-		local footZThresholdLow = -6
-
-		for _, meshGroup in ipairs(meshes) do
-			if not meshGroup.triangles then continue end
-			for _, vert in ipairs(meshGroup.triangles) do
-				if not vert.pos then continue end
-				if vert.pos.z < lowestZ then
-					lowestZ = vert.pos.z
-				end
-				if vert.pos.z <= footZThresholdHigh and vert.pos.z >= footZThresholdLow then
-					footRegionVerts[#footRegionVerts + 1] = vert.pos
-				end
-			end
-		end
-
-		if lowestZ < math.huge then
-			meshBottomZ = lowestZ
-		end
-
-		-- try to figure out foot dimensions from mesh. this is cursed
-		if #footRegionVerts >= 10 then
-			local avgFwd = (lFootFwd + rFootFwd)
-			if avgFwd:LengthSqr() > 0.001 then avgFwd:Normalize() else avgFwd = Vector(1, 0, 0) end
-			local avgRight = avgFwd:Cross(Vector(0, 0, 1))
-			if avgRight:LengthSqr() > 0.001 then avgRight:Normalize() else avgRight = Vector(0, 1, 0) end
-
-			local minFwd, maxFwd = math.huge, -math.huge
-			local minRight, maxRight = math.huge, -math.huge
-
-			for _, v in ipairs(footRegionVerts) do
-				local fP = v.x * avgFwd.x + v.y * avgFwd.y
-				local rP = v.x * avgRight.x + v.y * avgRight.y
-				if fP < minFwd then minFwd = fP end
-				if fP > maxFwd then maxFwd = fP end
-				if rP < minRight then minRight = rP end
-				if rP > maxRight then maxRight = rP end
-			end
-
-			footMeshLength = maxFwd - minFwd
-			footMeshWidth = math.max((maxRight - minRight) * 0.35, 2)
-			footVertCount = #footRegionVerts
-		end
-	end
-
-	-- scale relative to standard valve skeleton
-	local refLeg = 45
-	local scale = math.Clamp(legLength / refLeg, 0.4, 2.5)
-
-	-- how much the model floats above ground. dont ask why this is so complicated
-	local groundGap = math.Clamp(math.max(meshBottomZ, 0), 0, footBoneHeight * 0.8)
-	local belowOrigin = math.max(0, -meshBottomZ)
-
-	-- sole offset hack. accounts for shoes and floating meshes somehow
-	local soleOffset = math.Clamp(belowOrigin * 0.35 + groundGap * 0.5, 0, 2)
-
-	-- extra drop for meshes that dont touch the ground properly
-	local meshGapRef = groundGap / scale
-	local extraBodyDrop = math.Round(math.max(0.3, 0.3 + meshGapRef), 1)
-	local extraDropUneven = math.Round(math.max(1.2, 1.2 + meshGapRef), 1)
-
-	-- thighHeight is already in world units; don't divide by scale again or
-	-- the offset stays constant regardless of model size
-	local traceStartRef = math.Clamp(math.Round(thighHeight * 0.85, 0), 20, 40)
-
+	-- every model-specific value is derived at runtime now, so the
+	-- suggestion is simply "auto" for those cvars
 	local suggested = {
-		leg_length             = math.Round(legLength, 0),
-		trace_start_offset     = traceStartRef,
-		sole_offset            = math.Round(soleOffset, 2),
-		extra_body_drop        = extraBodyDrop,
-		extra_body_drop_uneven = extraDropUneven,
-		max_body_drop          = math.Round(math.Clamp(legLength * 0.95, 42, 80), 0),
-		high_foot_bend_boost   = 1.70,
-		foot_rotation_scale    = 0.15,
+		leg_length = 0,
+		sole_offset = 0,
 	}
 
 	local info = {
-		model             = model,
-		legLength         = legLength,
-		upperLegLength    = (lUpperLeg + rUpperLeg) * 0.5,
-		lowerLegLength    = (lLowerLeg + rLowerLeg) * 0.5,
-		footBoneHeight    = footBoneHeight,
-		footBoneLength    = footBoneLength,
-		footForwardL      = lFootFwd,
-		footForwardR      = rFootFwd,
-		meshBottomZ       = meshBottomZ,
-		meshFootLength    = footMeshLength,
-		meshFootWidth     = footMeshWidth,
-		meshFootVertCount = footVertCount,
-		soleOffset        = soleOffset,
-		groundGap         = groundGap,
-		thighHeight       = thighHeight,
-		scale             = scale,
+		model = model,
+		legLength = legLength,
+		upperLegLength = upper,
+		lowerLegLength = lower,
+		scale = math.Clamp(legLength / RT.REFERENCE_LEG_LENGTH, 0.4, 2.5),
+		soleOffset = soleCorrection,
+		meshBottomZ = mesh.footSoleZ or mesh.lowestZ or 0,
+		meshFootLength = mesh.footLength or 0,
+		meshFootWidth = mesh.footWidth or 0,
+		meshFootVertCount = mesh.footVerts or 0,
+		auxRootCount = #bones.auxRoots,
+		boneCount = bones.boneCount,
+		rootBone = ply:GetBoneName(bones.root) or tostring(bones.root),
 	}
-
-	IKFoot.ModelAnalysisCache[model] = { suggested = suggested, info = info }
-
+	bones.profile.info = info
 	return suggested, nil, info
+end
+
+-- how much the feet must be raised (+) or lowered (-) so the mesh soles,
+-- not the foot bones, touch the ground. derived from bind pose foot vertices
+function RT.GetSoleCorrection(profile, modelScale)
+	if not profile or not profile.mesh then return 0 end
+	local soleZ = profile.mesh.footSoleZ
+	if not soleZ then return 0 end
+	return math.Clamp(-soleZ * (modelScale or 1), -3, 4)
 end
 
 -- auto applies settings on model change. without this everything looks wrong after playermodel swap
 function IKFoot.AutoApplyModelSettings(ply)
 	if not IsValid(ply) or ply ~= LocalPlayer() then return end
 
-	local suggested, err, info = IKFoot.MeasureModel(ply)
+	local suggested, _, info = IKFoot.MeasureModel(ply)
 	if not suggested then return end
 
 	local byKey = IKFoot.Config.byKey
 	for key, value in pairs(suggested) do
 		local entry = byKey[key]
-		if entry then
+		local cvar = entry and RT.CVars[key]
+		if cvar and cvar:GetFloat() ~= value then
 			RunConsoleCommand(entry.cvar, tostring(value))
 		end
 	end
 
-	-- reset sole correction or old values haunt you
-	if RT.Controller and RT.Controller.ResetDynSole then
-		RT.Controller.ResetDynSole(ply)
-	end
+	if RT.State then RT.State.SoftRecover(ply) end
 
 	local modelShort = string.GetFileFromFilename(info.model or "unknown") or "model"
 	chat.AddText(
 		Color(100, 255, 100), "[IK Foot] ",
 		Color(255, 255, 255), "Auto-configured for ",
 		Color(100, 200, 255), modelShort,
-		Color(255, 255, 255), string.format(" (leg=%.0f, sole=%.2f, scale=%.2f)", info.legLength, info.soleOffset, info.scale)
+		Color(255, 255, 255), string.format(" (leg=%.0f, sole=%+.2f, scale=%.2f, extra roots=%d)", info.legLength, info.soleOffset, info.scale, info.auxRootCount)
 	)
 end
 
 function IKFoot.HardReset(ply)
 	if not IsValid(ply) then return end
-	RT.Apply.HardResetPlayer(ply)
 	IKFoot.InvalidateModelCache(ply:GetModel())
+	RT.Apply.HardResetPlayer(ply)
 end
 
 function IKFoot.HardResetAll()

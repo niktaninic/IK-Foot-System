@@ -3,11 +3,34 @@ if not IKFoot or not IKFoot.Runtime then return end
 
 local RT = IKFoot.Runtime
 local RESET_COOLDOWN = 0.5
+local MAX_IK_DISTANCE_SQR = 3000 * 3000
 
-hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
-	-- the main ik hook. runs every frame for every player. no pressure
-	if not IsValid(ply) then return end
+local function Deactivate(ply, bones)
+	-- only reset on the active -> inactive transition instead of every frame
+	if ply.IKActive then
+		RT.Apply.ResetPlayer(ply, bones)
+		ply.IKActive = nil
+	end
+end
 
+local function HandleFailure(ply, bones, threshold)
+	ply.IKFailCount = (ply.IKFailCount or 0) + 1
+	if ply.IKFailCount == threshold then
+		RT.State.SoftRecover(ply)
+	elseif ply.IKFailCount >= threshold * 2 then
+		if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
+			if ply.IKFailCount >= threshold * 3 then
+				RT.Apply.HardResetPlayer(ply)
+				ply.IKFailCount = 0
+			else
+				RT.Apply.ResetPlayer(ply, bones)
+			end
+			ply.IKLastResetTime = CurTime()
+		end
+	end
+end
+
+local function ProcessPlayer(ply)
 	-- detect death/respawn and hard reset to prevent bone distortion
 	local alive = ply:Alive()
 	if ply.IKWasAlive == false and alive then
@@ -16,37 +39,29 @@ hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 		return
 	end
 	ply.IKWasAlive = alive
-
 	if not alive then
-		RT.Apply.ResetPlayer(ply)
+		Deactivate(ply)
 		return
 	end
 
 	local bones = RT.GetIKBones(ply)
-	if not RT.GetIKParamBool(ply, "enabled") then
-		RT.Apply.ResetPlayer(ply, bones)
+	local params = RT.GetParams(ply)
+
+	if not params.enabled or not bones.valid or not RT.CanManipulateBones(ply)
+		or ply:GetPos():DistToSqr(EyePos()) > MAX_IK_DISTANCE_SQR then
+		Deactivate(ply, bones)
 		return
 	end
 
-	if not RT.CanManipulateBones(ply) then
-		RT.Apply.ResetPlayer(ply, bones)
-		return
-	end
-
-	if not bones.lFoot or not bones.rFoot or not bones.lCalf or not bones.rCalf or not bones.lThigh or not bones.rThigh then
-		RT.Apply.ResetPlayer(ply, bones)
-		return
-	end
-
-	-- detect model swap and fix settings before everything looks cursed
+	-- detect model swap and announce the auto configuration
 	if ply == LocalPlayer() then
 		local currentModel = ply:GetModel()
 		if ply.IKLastKnownModel ~= currentModel then
+			local hadModel = ply.IKLastKnownModel ~= nil
 			ply.IKLastKnownModel = currentModel
-			IKFoot.InvalidateModelCache(currentModel)
-			if RT.GetIKParamBool(ply, "auto_model_detect") then
-				timer.Simple(0.15, function()
-					if IsValid(ply) then
+			if params.auto_model_detect then
+				timer.Simple(hadModel and 0.15 or 1, function()
+					if IsValid(ply) and ply:GetModel() == currentModel then
 						IKFoot.AutoApplyModelSettings(ply)
 					end
 				end)
@@ -54,61 +69,66 @@ hook.Add("PostPlayerDraw", "IKFoot_PostPlayerDraw", function(ply)
 		end
 	end
 
+	-- read the clean animated pose: remove our offsets and rebuild the bones
 	RT.Apply.StripIKFromBones(ply, bones)
+	if ply.InvalidateBoneCache then ply:InvalidateBoneCache() end
 	ply:SetupBones()
 
 	local ok, errOrResult = pcall(function()
 		local skeleton = RT.Apply.BuildSkeleton(ply, bones)
 		if not skeleton then return nil end
-
-		local result = RT.Controller.Calculate(ply, skeleton)
+		local result = RT.Controller.Calculate(ply, skeleton, bones, params)
 		if not result then return nil end
-
 		RT.Apply.ApplyResult(ply, bones, result)
 		return result
 	end)
 
+	-- the bones were set up without our manipulations; force the draw that
+	-- follows this hook to set them up again so the ik shows up THIS frame
+	if ply.InvalidateBoneCache then ply:InvalidateBoneCache() end
+
 	if not ok then
-		-- ik pipeline exploded. if it keeps failing we give up and reset
-		ply.IKFailCount = (ply.IKFailCount or 0) + 1
-		if ply.IKFailCount >= 5 and ply.IKFailCount < 10 then
-			RT.State.SoftRecover(ply)
-		elseif ply.IKFailCount >= 10 and ply.IKFailCount < 15 then
-			if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
-				RT.Apply.ResetPlayer(ply, bones)
-				ply.IKLastResetTime = CurTime()
-			end
-		elseif ply.IKFailCount >= 15 then
-			if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
-				RT.Apply.HardResetPlayer(ply)
-				ply.IKLastResetTime = CurTime()
-			end
-			ply.IKFailCount = 0
+		if (ply.IKLastErrorPrint or 0) + 5 < RealTime() and RT.CVars.debug and RT.CVars.debug:GetInt() > 0 then
+			ply.IKLastErrorPrint = RealTime()
+			ErrorNoHalt("[IK Foot] " .. tostring(errOrResult) .. "\n")
 		end
+		HandleFailure(ply, bones, 5)
 		return
 	end
 
-	local result = errOrResult
-	if not result then
-		-- skeleton came back empty. probably loading or something idk
-		ply.IKFailCount = (ply.IKFailCount or 0) + 1
-		if ply.IKFailCount >= 6 and ply.IKFailCount < 12 then
-			RT.State.SoftRecover(ply)
-		elseif ply.IKFailCount >= 12 then
-			if (ply.IKLastResetTime or 0) + RESET_COOLDOWN <= CurTime() then
-				RT.Apply.ResetPlayer(ply, bones)
-				ply.IKLastResetTime = CurTime()
-			end
-			ply.IKFailCount = 0
-		end
+	if not errOrResult then
+		-- skeleton came back empty. probably still loading
+		HandleFailure(ply, bones, 6)
 		return
 	end
 
+	ply.IKActive = true
 	ply.IKFailCount = 0
+	ply.IKResult = errOrResult
+	ply.IKResultFrame = FrameNumber()
+end
 
-	local debugCvar = RT.CVars.debug
-	if debugCvar and debugCvar:GetInt() > 0 then
-		RT.Controller.DrawDebug(ply, result)
+-- PrePlayerDraw instead of PostPlayerDraw: the old hook computed the ik after
+-- the model was drawn, so every pose was shown one frame late (visible as
+-- feet trailing the ground at speed). runs once per frame even when the
+-- player is drawn several times (mirrors, water reflections)
+hook.Add("PrePlayerDraw", "IKFoot_PrePlayerDraw", function(ply)
+	if not IsValid(ply) then return end
+	local frame = FrameNumber()
+	if ply.IKLastFrame == frame then return end
+	ply.IKLastFrame = frame
+	ProcessPlayer(ply)
+end)
+
+hook.Add("PostDrawTranslucentRenderables", "IKFoot_Debug3D", function(depth, skybox)
+	if depth or skybox then return end
+	local debugCvar = RT.CVars and RT.CVars.debug
+	if not debugCvar or debugCvar:GetInt() <= 0 then return end
+	local frame = FrameNumber()
+	for _, ply in ipairs(player.GetAll()) do
+		if IsValid(ply) and ply.IKResult and (ply.IKResultFrame or 0) >= frame - 1 then
+			RT.Controller.DrawDebug(ply, ply.IKResult)
+		end
 	end
 end)
 

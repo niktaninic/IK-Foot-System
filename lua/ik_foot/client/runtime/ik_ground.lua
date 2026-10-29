@@ -5,202 +5,167 @@ local RT = IKFoot.Runtime
 RT.Ground = RT.Ground or {}
 local Ground = RT.Ground
 
-local WALKABLE_Z = 0.35
-local DEFAULT_SURFACE_MAX_SPEED = 45
+local WALKABLE_Z = 0.7 -- same as source's walkable slope (~45 deg)
 local COLOR_LEFT  = Color(80, 190, 255)
 local COLOR_RIGHT = Color(255, 165, 90)
 -- only average samples within this many units of the highest hit.
 -- prevents low-side (ground/air) samples from dragging the contact down
 -- when the foot is half on a curb or step edge.
-local CLUSTER_TOLERANCE = 3.0
+local CLUSTER_TOLERANCE = 2.0
 
-local SAMPLE_WEIGHTS = {
-	center = 4, toe = 2, heel = 2,
-	left = 2, right = 2,
-	toeInner = 1, toeOuter = 1, inner = 1, outer = 1,
-}
+local SAMPLE_WEIGHTS = { center = 4, toe = 2, heel = 2, inner = 1, outer = 1 }
+local SAMPLE_NAMES = { "center", "toe", "heel", "inner", "outer" }
+
+local HULL_MINS = Vector(-1.5, -1.5, 0)
+local HULL_MAXS = Vector(1.5, 1.5, 2)
 
 local function IsWalkable(normal)
 	return normal and normal.z >= WALKABLE_Z
 end
+Ground.IsWalkable = IsWalkable
 
-local function ClassifySurface(trace)
-	if trace.HitWorld then return "world", true, NULL end
-
-	local ent = trace.Entity
-	if not IsValid(ent) then
-		return "none", false, NULL
+-- players are filtered with a table (much cheaper than a lua filter callback,
+-- which runs for every entity the trace touches). rebuilt once per frame
+local filterFrame, filterList = -1, {}
+local function TraceFilter()
+	local frame = FrameNumber()
+	if frame ~= filterFrame then
+		filterFrame = frame
+		filterList = player.GetAll()
 	end
-
-	if ent:IsPlayer() then
-		return "player", false, ent
-	end
-
-	if ent:IsRagdoll() then
-		return "ragdoll", true, ent
-	end
-
-	local class = ent:GetClass()
-	if string.StartWith(class, "prop_") or class == "func_physbox" then
-		return "prop", true, ent
-	end
-
-	return "other", false, ent
+	return filterList
 end
 
-function Ground.TraceSample(ply, startPos, groundDist)
-	-- shoots a trace down to find ground. sometimes finds it sometimes not
-	local soleOffset = RT.GetIKParam(ply, "sole_offset")
-	local maxSurfaceSpeed = RT.GetIKParam(ply, "moving_surface_max_speed")
-	if maxSurfaceSpeed <= 0 then maxSurfaceSpeed = DEFAULT_SURFACE_MAX_SPEED end
-	local endPos = startPos - Vector(0, 0, groundDist)
+local traceData = { mask = MASK_PLAYERSOLID }
+local traceOut = {}
 
-	local trace = util.TraceHull({
-		start = startPos, endpos = endPos,
-		mins = Vector(-2, -2, 0), maxs = Vector(2, 2, 4),
-		mask = MASK_PLAYERSOLID,
-		filter = function(ent) return ent ~= ply and not ent:IsPlayer() end,
-	})
-
-	if trace.Hit and not IsWalkable(trace.HitNormal) then
-		local fallback = util.TraceLine({
-			start = startPos, endpos = endPos,
-			filter = function(ent) return ent ~= ply and not ent:IsPlayer() end,
-		})
-		if fallback.Hit and IsWalkable(fallback.HitNormal) then
-			trace = fallback
-		else
-			trace.Hit = false
-		end
+local function TraceDown(startPos, length, useHull)
+	traceData.start = startPos
+	traceData.endpos = startPos - Vector(0, 0, length)
+	traceData.filter = TraceFilter()
+	traceData.output = traceOut
+	if useHull then
+		traceData.mins = HULL_MINS
+		traceData.maxs = HULL_MAXS
+		util.TraceHull(traceData)
+	else
+		traceData.mins = nil
+		traceData.maxs = nil
+		util.TraceLine(traceData)
 	end
+	return traceOut
+end
+Ground.TraceDown = TraceDown
 
-	if trace.Hit then
-		local normal = trace.HitNormal or vector_up
-		local hitPos = trace.HitPos + normal * soleOffset
-		local surfaceType, surfaceAllowed, surfaceEnt = ClassifySurface(trace)
-		local surfaceSpeed = 0
-		if IsValid(surfaceEnt) and surfaceEnt.GetVelocity then
-			surfaceSpeed = surfaceEnt:GetVelocity():Length()
-		end
-		local surfaceStable = surfaceType == "world" or (surfaceAllowed and surfaceSpeed <= maxSurfaceSpeed)
+local function ClassifySurface(tr)
+	if tr.HitWorld then return "world", true, NULL end
+	local ent = tr.Entity
+	if not IsValid(ent) then return "none", false, NULL end
+	if ent:IsRagdoll() then return "ragdoll", true, ent end
+	local class = ent:GetClass()
+	if string.StartWith(class, "prop_") or class == "func_physbox" or string.StartWith(class, "func_") then
+		return "prop", true, ent
+	end
+	return "other", true, ent
+end
 
-		-- if trace gave us nan pretend nothing happened
-		if not (isvector(hitPos) and hitPos.x == hitPos.x and hitPos.y == hitPos.y and hitPos.z == hitPos.z) then
+local function IsFiniteVec(v)
+	return v.x == v.x and v.y == v.y and v.z == v.z
+		and v.x > -math.huge and v.x < math.huge and v.z > -math.huge and v.z < math.huge
+end
+
+function Ground.TraceSample(startPos, groundDist, soleOffset, maxSurfaceSpeed, useHull)
+	local tr = TraceDown(startPos, groundDist, useHull)
+
+	if tr.Hit and not tr.StartSolid and IsWalkable(tr.HitNormal) then
+		local normal = Vector(tr.HitNormal)
+		local hitPos = tr.HitPos + vector_up * soleOffset
+		if IsFiniteVec(hitPos) then
+			local surfaceType, surfaceAllowed, surfaceEnt = ClassifySurface(tr)
+			local surfaceSpeed = 0
+			if IsValid(surfaceEnt) then
+				surfaceSpeed = surfaceEnt:GetVelocity():Length()
+			end
 			return {
-				hit = false,
-				hitPos = endPos,
-				normal = vector_up,
-				distance = groundDist,
-				startPos = startPos,
-				surfaceType = "none",
-				surfaceAllowed = false,
-				surfaceStable = false,
-				surfaceSpeed = 0,
-				hitWorld = false,
-				entity = NULL,
+				hit = true,
+				hitPos = hitPos,
+				normal = normal,
+				startPos = Vector(startPos),
+				surfaceType = surfaceType,
+				surfaceStable = surfaceType == "world" or (surfaceAllowed and surfaceSpeed <= maxSurfaceSpeed),
+				entity = surfaceEnt,
 			}
 		end
-		return {
-			hit = true,
-			hitPos = hitPos,
-			normal = normal,
-			distance = math.max(startPos.z - hitPos.z, 0),
-			startPos = startPos,
-			surfaceType = surfaceType,
-			surfaceAllowed = surfaceAllowed,
-			surfaceStable = surfaceStable,
-			surfaceSpeed = surfaceSpeed,
-			hitWorld = trace.HitWorld and true or false,
-			entity = surfaceEnt,
-		}
 	end
 
 	return {
 		hit = false,
-		hitPos = endPos,
-		normal = vector_up,
-		distance = groundDist,
-		startPos = startPos,
+		hitPos = startPos - Vector(0, 0, groundDist),
+		normal = Vector(0, 0, 1),
+		startPos = Vector(startPos),
 		surfaceType = "none",
-		surfaceAllowed = false,
 		surfaceStable = false,
-		surfaceSpeed = 0,
-		hitWorld = false,
 		entity = NULL,
 	}
 end
 
-function Ground.SampleFoot(ply, footPos, footAng, traceStartZ, groundDist, isLeft)
-	-- traces a bunch of points around the foot to figure out where ground is
-	-- center toe heel and sides. probably overkill but whatever
-	local fwd = footAng:Forward()
-	fwd.z = 0
+-- 5 traces per foot (was 9 hull traces with lua filters). center uses a small
+-- hull so it doesnt slip through thin gaps, the rest are lines
+function Ground.SampleFoot(footPos, forward, traceStartZ, groundDist, isLeft, scale, soleOffset, maxSurfaceSpeed)
+	local fwd = Vector(forward.x, forward.y, 0)
 	if fwd:LengthSqr() < 0.001 then fwd = Vector(1, 0, 0) else fwd:Normalize() end
-
-	local right = footAng:Right()
-	right.z = 0
-	if right:LengthSqr() < 0.001 then right = Vector(0, 1, 0) else right:Normalize() end
+	local right = Vector(fwd.y, -fwd.x, 0)
 
 	local sideSign = isLeft and -1 or 1
-	local outer = right * (2.5 * sideSign)
-	local inner = -outer
-	-- always start from player ground reference, not animated bone position.
-	-- weapon holdtype animations can elevate foot bones far above actual ground level,
-	-- which would push startZ up and potentially cause traces to miss the ground entirely.
 	local base = Vector(footPos.x, footPos.y, traceStartZ)
+	local toeLen, heelLen, halfW = 5 * scale, 3 * scale, 2 * scale
 
 	local offsets = {
-		center   = Vector(),
-		toe      = fwd * 5.5,
-		heel     = -fwd * 3.5,
-		left     = -right * 2.25,
-		right    = right * 2.25,
-		toeInner = fwd * 4 + inner * 0.75,
-		toeOuter = fwd * 4 + outer * 0.75,
-		outer    = outer,
-		inner    = inner,
+		center = vector_origin,
+		toe    = fwd * toeLen,
+		heel   = fwd * -heelLen,
+		outer  = right * (halfW * sideSign),
+		inner  = right * (-halfW * sideSign),
 	}
 
 	local samples = {}
-	for name, offset in pairs(offsets) do
-		samples[name] = Ground.TraceSample(ply, base + offset, groundDist)
+	for _, name in ipairs(SAMPLE_NAMES) do
+		samples[name] = Ground.TraceSample(base + offsets[name], groundDist, soleOffset, maxSurfaceSpeed, name == "center")
 	end
+	samples._forward = fwd
+	samples._right = right
 	return samples
 end
 
-function Ground.ResolveContact(samples, fallbackPos, fallbackNormal)
+function Ground.ResolveContact(samples, fallbackPos)
 	-- find the highest valid hit first so we can cluster around it.
 	-- this stops low-side samples (the "air" side of a curb) from dragging
 	-- the contact position down into geometry or off into space.
-	local highestHitZ = -math.huge
-	for _, s in pairs(samples) do
-		if s.hit and IsWalkable(s.normal) and s.hitPos.z > highestHitZ then
-			highestHitZ = s.hitPos.z
+	local highestZ = -math.huge
+	for _, name in ipairs(SAMPLE_NAMES) do
+		local s = samples[name]
+		if s and s.hit and s.hitPos.z > highestZ then
+			highestZ = s.hitPos.z
 		end
 	end
-	local clusterFloor = highestHitZ - CLUSTER_TOLERANCE
+	local clusterFloor = highestZ - CLUSTER_TOLERANCE
 
-	local totalWeight, hitCount = 0, 0
-	local posSum = Vector()
+	local totalWeight, hitCount, stableWeight = 0, 0, 0
+	local zSum = 0
 	local normalSum = Vector()
-	local distSum = 0
 	local surfaceWeights = {}
 	local bestEntity, bestEntityWeight = NULL, 0
-	local stableWeight = 0
 
-	for name, s in pairs(samples) do
-		if s.hit and IsWalkable(s.normal) and s.hitPos.z >= clusterFloor then
+	for _, name in ipairs(SAMPLE_NAMES) do
+		local s = samples[name]
+		if s and s.hit and s.hitPos.z >= clusterFloor then
 			local w = SAMPLE_WEIGHTS[name] or 1
 			totalWeight = totalWeight + w
-			posSum = posSum + s.hitPos * w
-			normalSum = normalSum + s.normal * w
-			distSum = distSum + s.distance * w
+			zSum = zSum + s.hitPos.z * w
+			normalSum:Add(s.normal * w)
 			hitCount = hitCount + 1
-			local surfaceType = s.surfaceType or "none"
-			surfaceWeights[surfaceType] = (surfaceWeights[surfaceType] or 0) + w
-			if s.surfaceStable then
-				stableWeight = stableWeight + w
-			end
+			surfaceWeights[s.surfaceType] = (surfaceWeights[s.surfaceType] or 0) + w
+			if s.surfaceStable then stableWeight = stableWeight + w end
 			if IsValid(s.entity) and w > bestEntityWeight then
 				bestEntity = s.entity
 				bestEntityWeight = w
@@ -208,273 +173,183 @@ function Ground.ResolveContact(samples, fallbackPos, fallbackNormal)
 		end
 	end
 
-	local pos, normal, dist = fallbackPos, fallbackNormal or vector_up, 0
-
+	local pos = Vector(fallbackPos)
+	local normal = Vector(0, 0, 1)
 	if totalWeight > 0 then
-		pos = posSum / totalWeight
-		normal = normalSum / totalWeight
-		if normal:LengthSqr() < 0.001 then normal = vector_up else normal:Normalize() end
-		dist = distSum / totalWeight
-		-- weighted average went nan somehow. fall back to defaults
-		if pos.x ~= pos.x or pos.y ~= pos.y or pos.z ~= pos.z then
-			pos = fallbackPos
-			hitCount = 0
-		end
-		if normal.x ~= normal.x or normal.y ~= normal.y or normal.z ~= normal.z then
-			normal = vector_up
+		pos.z = zSum / totalWeight
+		if normalSum:LengthSqr() > 0.001 then
+			normal = normalSum:GetNormalized()
 		end
 	end
 
-	local dominantSurfaceType = "none"
-	local dominantWeight = 0
+	local dominant, dominantWeight = "none", 0
 	for surfaceType, weight in pairs(surfaceWeights) do
 		if weight > dominantWeight then
-			dominantWeight = weight
-			dominantSurfaceType = surfaceType
+			dominant, dominantWeight = surfaceType, weight
 		end
 	end
 
 	return {
 		hasHit = hitCount > 0,
 		hitCount = hitCount,
-		position = Vector(pos),
-		normal = Vector(normal),
-		supportDistance = dist,
+		position = pos,
+		-- top of whatever is under the foot. used by anti-clip so a foot that
+		-- straddles an edge rests on the edge instead of sinking into it
+		highestZ = hitCount > 0 and highestZ or pos.z,
+		normal = normal,
 		samples = samples,
-		surfaceType = dominantSurfaceType,
-		surfaceStable = stableWeight >= math.max(totalWeight * 0.5, 1),
+		surfaceType = dominant,
+		surfaceStable = totalWeight > 0 and stableWeight >= totalWeight * 0.5,
 		surfaceEntity = bestEntity,
-		surfaceFromWorld = dominantSurfaceType == "world",
 	}
 end
 
-function Ground.GetStepSignal(contact, legLength)
-	if not contact or not contact.hasHit then
-		return { confidence = 0, edge = 0, toeDelta = 0, heelDelta = 0 }
+-- =====================================================================
+-- stair profile scanner
+-- =====================================================================
+-- samples ground height along the movement direction and splits it into
+-- flat treads separated by step edges. the stepper uses the treads to put
+-- each foot on a real step instead of wherever the walk animation lands.
+
+function Ground.ScanStairs(origin, dir, scale, minStep, maxStep, soleOffset)
+	local stepLen = 2 * scale
+	local sMin, sMax = -28 * scale, 52 * scale
+	local topZ = origin.z + maxStep + 6 * scale
+	local length = maxStep * 3 + 12 * scale
+	local flatTol = math.max(0.6, 0.25 * scale)
+
+	local heights = {}
+	local n = 0
+	for s = sMin, sMax, stepLen do
+		n = n + 1
+		local tr = TraceDown(Vector(origin.x + dir.x * s, origin.y + dir.y * s, topZ), length, false)
+		if tr.Hit and not tr.StartSolid and IsWalkable(tr.HitNormal) then
+			heights[n] = { s = s, z = tr.HitPos.z + soleOffset }
+		else
+			heights[n] = { s = s, z = nil }
+		end
 	end
 
-	local samples = contact.samples
-	if not samples then
-		return { confidence = 0, edge = 0, toeDelta = 0, heelDelta = 0 }
+	-- group into treads
+	local treads = {}
+	local cur = nil
+	local function Close(edgeAfter)
+		if cur then
+			cur.edgeAfter = edgeAfter
+			treads[#treads + 1] = cur
+			cur = nil
+		end
 	end
-
-	local center = samples.center
-	local toe = samples.toe
-	local heel = samples.heel
-	if not center or not toe or not heel or not center.hit or not toe.hit or not heel.hit then
-		return { confidence = 0, edge = 0, toeDelta = 0, heelDelta = 0 }
-	end
-
-	local toeDelta = toe.hitPos.z - center.hitPos.z
-	local heelDelta = heel.hitPos.z - center.hitPos.z
-	local gradient = math.abs(toeDelta - heelDelta)
-	local edge = math.max(math.abs(toeDelta), math.abs(heelDelta), gradient)
-	local minStep = math.max(legLength * 0.11, 4)
-	local confidence = math.Clamp((edge - minStep * 0.35) / math.max(minStep, 0.5), 0, 1)
-
-	if contact.surfaceType == "world" then
-		confidence = confidence * 1.05
-	elseif contact.surfaceType == "prop" or contact.surfaceType == "ragdoll" then
-		confidence = confidence * 0.92
-	else
-		confidence = confidence * 0.75
-	end
-
-	if not contact.surfaceStable then
-		confidence = confidence * 0.45
-	end
-
-	return {
-		confidence = math.Clamp(confidence, 0, 1),
-		edge = edge,
-		toeDelta = toeDelta,
-		heelDelta = heelDelta,
-	}
-end
-
-function Ground.BuildTerrainHint(leftContact, rightContact, legLength)
-	local lSignal = Ground.GetStepSignal(leftContact, legLength)
-	local rSignal = Ground.GetStepSignal(rightContact, legLength)
-
-	local surfaceCounts = {
-		world = 0,
-		prop = 0,
-		ragdoll = 0,
-		other = 0,
-	}
-
-	for _, contact in ipairs({ leftContact, rightContact }) do
-		if contact and contact.hasHit then
-			if contact.surfaceType == "world" then
-				surfaceCounts.world = surfaceCounts.world + 1
-			elseif contact.surfaceType == "prop" then
-				surfaceCounts.prop = surfaceCounts.prop + 1
-			elseif contact.surfaceType == "ragdoll" then
-				surfaceCounts.ragdoll = surfaceCounts.ragdoll + 1
+	for i = 1, n do
+		local h = heights[i]
+		if not h.z then
+			Close(false)
+		elseif not cur then
+			cur = { s0 = h.s, s1 = h.s, z = h.z, zMin = h.z, zMax = h.z, count = 1, edgeBefore = false }
+		else
+			local dz = h.z - cur.z
+			if math.abs(dz) <= flatTol then
+				cur.s1 = h.s
+				cur.count = cur.count + 1
+				cur.zMin = math.min(cur.zMin, h.z)
+				cur.zMax = math.max(cur.zMax, h.z)
+				-- running mean keeps slightly noisy treads together
+				cur.z = cur.z + (h.z - cur.z) / cur.count
 			else
-				surfaceCounts.other = surfaceCounts.other + 1
+				local isEdge = math.abs(dz) >= minStep * 0.8 and math.abs(dz) <= maxStep
+				Close(isEdge)
+				cur = { s0 = h.s, s1 = h.s, z = h.z, zMin = h.z, zMax = h.z, count = 1, edgeBefore = isEdge }
+			end
+		end
+	end
+	Close(false)
+
+	-- the edge sits halfway between the last sample of one tread and the
+	-- first of the next. extend treads to it so they tile the profile
+	for i = 1, #treads - 1 do
+		local a, b = treads[i], treads[i + 1]
+		if a.edgeAfter and b.edgeBefore then
+			local mid = (a.s1 + b.s0) * 0.5
+			a.s1, b.s0 = mid, mid
+		end
+	end
+
+	-- count consistent edges near the player
+	local edges, upCount, downCount = 0, 0, 0
+	local riseSum, depthSum, depthCount = 0, 0, 0
+	for i = 1, #treads - 1 do
+		local a, b = treads[i], treads[i + 1]
+		if a.edgeAfter and b.edgeBefore and b.s0 > -20 * scale and a.s1 < 44 * scale then
+			edges = edges + 1
+			local rise = b.z - a.z
+			riseSum = riseSum + math.abs(rise)
+			if rise > 0 then upCount = upCount + 1 else downCount = downCount + 1 end
+			-- inner treads (bounded by edges on both sides) give the depth
+			if b.edgeAfter and i + 1 < #treads then
+				depthSum = depthSum + (b.s1 - b.s0)
+				depthCount = depthCount + 1
 			end
 		end
 	end
 
-	local bestSurface = "none"
-	local bestCount = -1
-	for surfaceType, count in pairs(surfaceCounts) do
-		if count > bestCount then
-			bestSurface = surfaceType
-			bestCount = count
-		end
-	end
-
-	local stableCount = 0
-	if leftContact and leftContact.surfaceStable then stableCount = stableCount + 1 end
-	if rightContact and rightContact.surfaceStable then stableCount = stableCount + 1 end
+	local consistent = math.max(upCount, downCount)
+	local depth = depthCount > 0 and depthSum / depthCount or 0
+	local isStairs = consistent >= 2 and depthCount >= 1
+		and depth >= 5 * scale and depth <= 40 * scale
 
 	return {
-		surfaceType = bestSurface,
-		stable = stableCount > 0,
-		leftSignal = lSignal,
-		rightSignal = rSignal,
-		edgeConfidence = math.max(lSignal.confidence, rSignal.confidence),
-		edgeMagnitude = math.max(lSignal.edge, rSignal.edge),
+		isStairs = isStairs,
+		treads = treads,
+		origin = Vector(origin),
+		dir = Vector(dir),
+		rise = edges > 0 and riseSum / edges or 0,
+		depth = depth,
+		ascending = upCount >= downCount,
+		edges = edges,
+		samples = heights,
 	}
 end
 
-function Ground.ValidateContact(contact, samples, footBoneZ, soleOffset, tolerance)
-	-- checks if contact makes sense or if foot is stuck in geometry
-	-- this is the last line of defense against cursed terrain
-	tolerance = tolerance or 0.5
+-- along-track coordinate of a world position in a scan
+function Ground.ScanCoord(scan, pos)
+	return (pos.x - scan.origin.x) * scan.dir.x + (pos.y - scan.origin.y) * scan.dir.y
+end
 
-	local result = {
-		isValid = true,
-		penetrationCount = 0,
-		correctionZ = 0,
-		highestValidZ = -math.huge,
-		lowestHitZ = math.huge,
-		invalidReason = nil,
-		normalVariance = 0,
-	}
-
-	if not contact.hasHit then
-		result.isValid = false
-		result.invalidReason = "no_hit"
-		return result
+function Ground.TreadIndexAt(scan, s)
+	local treads = scan.treads
+	local best, bestDist = nil, math.huge
+	for i, t in ipairs(treads) do
+		if s >= t.s0 and s <= t.s1 then return i end
+		local d = s < t.s0 and (t.s0 - s) or (s - t.s1)
+		if d < bestDist then best, bestDist = i, d end
 	end
-
-	local expectedSoleZ = footBoneZ - soleOffset
-	local totalHits = 0
-	local belowSole = 0
-	local penetrating = 0
-	local normals = {}
-
-	for _, s in pairs(samples) do
-		if not s.hit then continue end
-		totalHits = totalHits + 1
-		normals[#normals + 1] = s.normal
-
-		local rawHitZ = s.hitPos.z - soleOffset
-
-		-- foot is inside the ground. this is bad
-		if rawHitZ > footBoneZ + tolerance then
-			penetrating = penetrating + 1
-		end
-
-		if rawHitZ < expectedSoleZ - tolerance * 2 then
-			belowSole = belowSole + 1
-		end
-
-		if rawHitZ <= footBoneZ + tolerance and s.hitPos.z > result.highestValidZ then
-			result.highestValidZ = s.hitPos.z
-		end
-
-		if s.hitPos.z < result.lowestHitZ then
-			result.lowestHitZ = s.hitPos.z
-		end
-	end
-
-	result.penetrationCount = penetrating
-
-	-- most samples say foot is underground. time to correct
-	if totalHits > 0 and penetrating / totalHits > 0.4 then
-		result.isValid = false
-		result.invalidReason = "penetrating"
-		if result.highestValidZ > -math.huge then
-			result.correctionZ = result.highestValidZ + soleOffset - footBoneZ
-		else
-			result.correctionZ = contact.position.z - footBoneZ
-		end
-	end
-
-	if totalHits > 0 and belowSole / totalHits > 0.6 then
-		result.invalidReason = result.invalidReason or "below_sole"
-	end
-
-	-- check if normals agree. if they dont the surface is sketchy
-	if #normals >= 3 then
-		local avgNormal = Vector()
-		for _, n in ipairs(normals) do avgNormal:Add(n) end
-		avgNormal:Div(#normals)
-		if avgNormal:LengthSqr() > 0.001 then avgNormal:Normalize() end
-
-		local variance = 0
-		for _, n in ipairs(normals) do
-			variance = variance + (1 - n:Dot(avgNormal))
-		end
-		result.normalVariance = variance / #normals
-
-		if result.normalVariance > 0.35 then
-			result.invalidReason = result.invalidReason or "inconsistent_normals"
-		end
-	end
-
-	if contact.normal.z < WALKABLE_Z then
-		result.isValid = false
-		result.invalidReason = result.invalidReason or "steep_surface"
-	end
-
-	return result
+	return best
 end
 
 function Ground.DrawSamples(samples, boxColor, normalColor, debugLevel)
-	for name, s in pairs(samples) do
-		if not s.hit then continue end
+	for _, name in ipairs(SAMPLE_NAMES) do
+		local s = samples[name]
 		local isCenter = name == "center"
-		if debugLevel <= 1 and not isCenter then continue end
-		local col = isCenter and boxColor or Color(boxColor.r, boxColor.g, boxColor.b, 110)
-		render.DrawWireframeBox(s.hitPos, angle_zero, Vector(-2, -2, 0), Vector(2, 2, 4), col, true)
-		render.DrawLine(s.startPos, s.hitPos, col)
-		render.DrawLine(s.hitPos, s.hitPos + s.normal * 6, normalColor)
+		if s and s.hit and (isCenter or debugLevel > 1) then
+			local col = isCenter and boxColor or Color(boxColor.r, boxColor.g, boxColor.b, 110)
+			render.DrawWireframeBox(s.hitPos, angle_zero, HULL_MINS, HULL_MAXS, col, true)
+			render.DrawLine(s.startPos, s.hitPos, col)
+			render.DrawLine(s.hitPos, s.hitPos + s.normal * 6, normalColor)
+		end
+	end
+end
+
+function Ground.DrawScan(scan)
+	if not scan then return end
+	local colTread = scan.isStairs and Color(80, 255, 120) or Color(160, 160, 160)
+	for _, t in ipairs(scan.treads) do
+		local a = scan.origin + scan.dir * t.s0
+		local b = scan.origin + scan.dir * t.s1
+		a.z, b.z = t.z, t.z
+		render.DrawLine(a, b, colTread, true)
 	end
 end
 
 function Ground.DebugColors(isLeft)
 	return isLeft and COLOR_LEFT or COLOR_RIGHT
-end
-
--- looks ahead in movement direction and returns where the foot should land on the next step.
--- fromPos: start of search (player hip-height at foot's lateral position)
--- moveDir: normalized XY movement direction
--- lookDist: how far ahead to check
--- upClear: how far above fromPos to start the downward trace (handles steps up and down)
-function Ground.PredictLanding(ply, fromPos, moveDir, lookDist, upClear, groundDist)
-	local searchX = fromPos.x + moveDir.x * lookDist
-	local searchY = fromPos.y + moveDir.y * lookDist
-	local searchTop = Vector(searchX, searchY, fromPos.z + upClear)
-	local searchBot = Vector(searchX, searchY, fromPos.z - groundDist)
-
-	local trace = util.TraceHull({
-		start = searchTop, endpos = searchBot,
-		mins = Vector(-2, -2, 0), maxs = Vector(2, 2, 4),
-		mask = MASK_PLAYERSOLID,
-		filter = function(ent) return ent ~= ply and not ent:IsPlayer() end,
-	})
-
-	if trace.Hit and IsWalkable(trace.HitNormal) then
-		local soleOffset = RT.GetIKParam(ply, "sole_offset")
-		local landPos = trace.HitPos + (trace.HitNormal or vector_up) * soleOffset
-		if landPos.x == landPos.x and landPos.y == landPos.y and landPos.z == landPos.z then
-			return landPos
-		end
-	end
-	return nil
 end

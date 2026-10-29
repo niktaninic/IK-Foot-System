@@ -36,13 +36,19 @@ local CATEGORIES = {
 	},
 	{
 		title = "Leg & Foot",
-		keys = { "leg_length", "high_foot_bend_boost", "foot_rotation_scale" },
+		keys = { "leg_length", "foot_rotation_scale", "rotation_smoothing", "lock_strength", "release_speed" },
+	},
+	{
+		title = "Stairs",
+		keys = {
+			"stair_stepper", "stair_treads_per_step", "stair_max_cadence", "stair_step_lift",
+			"stair_step_min_height", "stair_step_max_height", "moving_surface_max_speed",
+		},
 	},
 	{
 		title = "Body & Stability",
 		keys = {
 			"uneven_drop_scale", "extra_body_drop", "extra_body_drop_uneven", "max_body_drop",
-			"lock_strength", "release_speed", "rotation_smoothing",
 			"stabilize_idle", "idle_velocity",
 		},
 	},
@@ -346,7 +352,11 @@ local function BuildSettingsContent(frame, parent)
 		)
 		chat.AddText(
 			Color(100, 255, 100), "[IK Foot] ",
-			Color(180, 180, 180), string.format("  Leg=%.1f  Sole=%.2f  Scale=%.2f  MeshZ=%.1f", info.legLength, info.soleOffset, info.scale, info.meshBottomZ or 0)
+			Color(180, 180, 180), string.format("  Leg=%.1f (%.1f+%.1f)  Sole=%+.2f  Scale=%.2f  SoleZ=%.1f", info.legLength, info.upperLegLength, info.lowerLegLength, info.soleOffset, info.scale, info.meshBottomZ or 0)
+		)
+		chat.AddText(
+			Color(100, 255, 100), "[IK Foot] ",
+			Color(180, 180, 180), string.format("  Bones=%d  Root=%s  Extra roots moved with body=%d", info.boneCount or 0, tostring(info.rootBone), info.auxRootCount or 0)
 		)
 		if info.meshFootLength and info.meshFootLength > 0 then
 			chat.AddText(
