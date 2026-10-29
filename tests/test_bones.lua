@@ -23,10 +23,11 @@ local function makeModel(def)
   function ply:GetBoneName(i) return names[i] end
   function ply:GetBoneParent(i) return parents[i] end
   function ply:LookupBone(n) return byName[n] end
+  function ply:GetBoneMatrix() return nil end
   util = { GetModelMeshes = function()
     local verts = {}
     for _, w in ipairs(def.weighted) do
-      verts[#verts + 1] = { pos = Vector(0, 0, w[2] or 10), weights = { { bone = byName[w[1]], weight = 1 } } }
+      verts[#verts + 1] = { pos = Vector(w[3] or 0, w[4] or 0, w[2] or 10), weights = { { bone = byName[w[1]], weight = 1 } } }
     end
     return { { verticies = verts } }
   end }
@@ -37,6 +38,9 @@ local function show(title, ply, byName)
   local b = RT.GetIKBones(ply)
   local aux = {}
   for _, i in ipairs(b.auxRoots or {}) do aux[#aux + 1] = ply:GetBoneName(i) end
+  local fol = {}
+  for _, f in ipairs(b.followers or {}) do fol[#fol + 1] = ply:GetBoneName(f.bone) .. "->" .. f.side .. (f.shifted and "(shifted)" or "") end
+  print("   foot followers: [" .. table.concat(fol, ", ") .. "]")
   print(string.format("%-34s valid=%s root=%s lean=%s legsL=%s/%s/%s  moved extra roots: [%s]", title, tostring(b.valid),
     b.root and ply:GetBoneName(b.root) or "-", b.leanBone and ply:GetBoneName(b.leanBone) or "-",
     b.lThigh and ply:GetBoneName(b.lThigh) or "-", b.lCalf and ply:GetBoneName(b.lCalf) or "-", b.lFoot and ply:GetBoneName(b.lFoot) or "-",
@@ -97,3 +101,18 @@ local m4 = { model = "models/test/broken.mdl", bones = {
 }, weighted = {} }
 local p4, n4 = makeModel(m4)
 show("broken hierarchy", p4, n4)
+
+-- model 5: shoes skinned to bones hanging off the pelvis (what broke in game)
+local m5 = { model = "models/test/shoes.mdl", bones = {
+  { VB.."Pelvis", -1 }, { VB.."Spine", 0 }, { VB.."Spine1", 1 },
+  { VB.."L_Thigh", 0 }, { VB.."L_Calf", 3 }, { VB.."L_Foot", 4 },
+  { VB.."R_Thigh", 0 }, { VB.."R_Calf", 6 }, { VB.."R_Foot", 7 },
+  { "shoe_L", 0 }, { "shoe_L_lace", 9 }, { "shoe_R", 0 },
+  { "hair_long", 2 }, { "skirt_front", 0 },
+}, weighted = {
+  { VB.."L_Foot", 3, 1, 4 }, { VB.."R_Foot", 3, 1, -4 },
+  { "shoe_L", 1.5, 2, 4 }, { "shoe_L_lace", 4, 3, 4 }, { "shoe_R", 1.5, 2, -4 },
+  { "hair_long", 45, -3, 0 }, { "skirt_front", 30, 4, 0 },
+} }
+local p5, n5 = makeModel(m5)
+local b5 = show("shoes parented to pelvis", p5, n5)

@@ -249,7 +249,7 @@ function State.UpdateRestHeight(runtimeState, footHeight, dt, seed)
 		runtimeState.restHeight = rest
 		return rest
 	end
-	local rate = footHeight < rest and 1 / 0.15 or 1 / 4
+	local rate = footHeight < rest and 1 / 0.6 or 1 / 3
 	rest = rest + (footHeight - rest) * (1 - math.exp(-dt * rate))
 	runtimeState.restHeight = rest
 	return rest
@@ -458,6 +458,36 @@ function State.UpdateStepper(runtimeState, data)
 					descending = toPos.z < trail.plant.z - 0.5,
 				}
 				trail.plant = nil
+			end
+		end
+	elseif not left.swing and not right.swing then
+		-- standing still: a foot left far from under the body (stopped mid
+		-- stride, turned around) takes one calm step onto the tread under the
+		-- hips, one foot at a time. otherwise it stays planted far away and
+		-- the leg ends up stretched out sideways or backwards
+		local settleDist = data.legLength * 0.22
+		local worstSide, worstDist = nil, settleDist
+		for _, side in ipairs({ "left", "right" }) do
+			local d = math.abs(FootCoord(stepper.feet[side]) - sBody)
+			if d > worstDist then worstSide, worstDist = side, d end
+		end
+		if worstSide then
+			local f = stepper.feet[worstSide]
+			local toPos, sTo = Place(worstSide, RT.Ground.TreadIndexAt(scan, sBody) or 1)
+			-- only if it is a real improvement (long landings place the foot
+			-- near the edge, which must not cause an endless re-step)
+			if math.abs(sTo - sBody) < worstDist - 1 then
+				f.swing = {
+					from = f.plant,
+					to = toPos,
+					t = 0,
+					bodyStart = Vector(data.origin),
+					dir = Vector(scan.dir),
+					bodyTravel = math.huge, -- purely time based
+					ascending = toPos.z > f.plant.z + 0.5,
+					descending = toPos.z < f.plant.z - 0.5,
+				}
+				f.plant = nil
 			end
 		end
 	end

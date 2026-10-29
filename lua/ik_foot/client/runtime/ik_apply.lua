@@ -33,6 +33,9 @@ end
 local function ManagedBones(bones)
 	local list = { bones.lThigh, bones.rThigh, bones.lCalf, bones.rCalf, bones.lFoot, bones.rFoot }
 	if bones.leanBone then list[#list + 1] = bones.leanBone end
+	for _, f in ipairs(bones.followers or {}) do
+		list[#list + 1] = f.bone
+	end
 	return list
 end
 
@@ -41,6 +44,9 @@ local function PositionBones(bones)
 	if bones.root then list[1] = bones.root end
 	for _, aux in ipairs(bones.auxRoots or {}) do
 		list[#list + 1] = aux
+	end
+	for _, f in ipairs(bones.followers or {}) do
+		list[#list + 1] = f.bone
 	end
 	return list
 end
@@ -91,7 +97,26 @@ function Apply.BuildSkeleton(ply, bones)
 		spineAng = ang
 	end
 
+	-- animated transforms of the foot followers and the rotation of the space
+	-- their position manipulation lives in (parent bone, or model space)
+	local followers = {}
+	local entAng = ply.GetRenderAngles and ply:GetRenderAngles() or ply:GetAngles()
+	for i, f in ipairs(bones.followers or {}) do
+		local pos, ang = GetBoneWorldTransform(ply, f.bone, plyPos)
+		local parentAng
+		if f.parent >= 0 then
+			local _, pa = GetBoneWorldTransform(ply, f.parent, plyPos)
+			parentAng = pa
+		else
+			parentAng = Angle(0, entAng.y, 0)
+		end
+		if pos and parentAng then
+			followers[i] = { pos = pos, ang = ang, parentAng = parentAng }
+		end
+	end
+
 	return {
+		followers = followers,
 		legLength = ply.IKMeasuredLegLength or RT.REFERENCE_LEG_LENGTH,
 		left = legs.left,
 		right = legs.right,
@@ -145,8 +170,18 @@ function Apply.ApplyResult(ply, bones, result)
 	local modelScale = math.max(ply:GetModelScale() or 1, 0.01)
 	local offset = Vector(0, 0, -drop / modelScale)
 
-	for _, bone in ipairs(PositionBones(bones)) do
+	for _, bone in ipairs(bones.root and { bones.root } or {}) do
 		RT.ApplyBlendedBonePosition(ply, bone, offset)
+	end
+	for _, bone in ipairs(bones.auxRoots or {}) do
+		RT.ApplyBlendedBonePosition(ply, bone, offset)
+	end
+	for i, f in ipairs(bones.followers or {}) do
+		local out = result.followers and result.followers[i]
+		local pos = out and IsFiniteVector(out.pos) and out.pos or Vector()
+		local ang = out and IsFiniteAngle(out.ang) and out.ang or Angle()
+		RT.ApplyBlendedBonePosition(ply, f.bone, pos)
+		RT.ApplyBlendedBoneAngles(ply, f.bone, ang)
 	end
 
 	for _, side in ipairs({ "left", "right" }) do

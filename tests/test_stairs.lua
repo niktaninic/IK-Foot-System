@@ -98,7 +98,13 @@ local function skeleton(o, phase)
   return { legLength = 39, left = legs.left, right = legs.right }
 end
 
-local bones = { profile = {}, auxRoots = {}, leanBone = nil }
+-- shoes skinned to bones parented to the pelvis (not to the feet)
+local bones = { profile = {}, auxRoots = {}, leanBone = nil, followers = {
+  { bone = 50, side = "left", parent = 0, shifted = true },
+  { bone = 51, side = "right", parent = 0, shifted = true },
+} }
+local SHOE_OFFSET = Vector(1.5, 0, -2)
+local maxShoeErr = 0
 local phase = 0
 local plants = { left = {}, right = {} }
 local lastPhase = { left = "planted", right = "planted" }
@@ -114,7 +120,20 @@ for i = 1, 60 * 5 do
   ply.pos.z = HMax(ply.pos.x - 16, ply.pos.x + 16)
   if CURSPEED > 0 then phase = phase + dt * CURSPEED / STRIDE * math.pi else phase = math.floor(phase / math.pi + 0.5) * math.pi + math.pi * 0.5 end
   local sk = skeleton(ply:GetPos(), phase)
+  sk.followers = {}
+  for i, side in ipairs({"left", "right"}) do
+    local fl = sk[side]
+    local pos, ang = LocalToWorld(SHOE_OFFSET, Angle(0, 0, 0), fl.footPos, fl.footAng)
+    sk.followers[i] = { pos = pos, ang = ang, parentAng = Angle(0, DIR > 0 and 0 or 180, 0) }
+  end
   local res = RT.Controller.Calculate(ply, sk, bones, P)
+  for i, side in ipairs({"left", "right"}) do
+    local f, out, leg = sk.followers[i], res.followers[i], res[side]
+    -- forward: parent (pelvis) moved by -drop, plus our manip in parent space
+    local final = f.pos + Vector(0, 0, -res.bodyDrop) + LocalToWorld(out.pos, Angle(), Vector(), f.parentAng)
+    local expected = LocalToWorld(SHOE_OFFSET, Angle(), leg.footFinal, leg.footWorld)
+    maxShoeErr = math.max(maxShoeErr, final:Distance(expected))
+  end
   LASTRES = res
   local inStairs = res.debug.stairBlend >= 0.999
   if res.debug.stairBlend > 0 then stairFrames = stairFrames + 1 end
@@ -163,5 +182,6 @@ end
 print(string.format("max treads between consecutive footfalls: %d, same-foot-twice: %d", maxSkip, skips))
 print(string.format("max planted foot penetration: %.2f  float: %.2f", maxPenetration, maxFloat))
 if STOPAT then local st = RT.State.Get(ply); local res = LASTRES; for _, side in ipairs({'left','right'}) do local leg = res[side]; print(string.format('STOPPED %s phase=%s ankle z-ground-rest=%.2f tread=%d', side, leg.procPhase, leg.ankle.z - H(leg.ankle.x) - res.debug.restHeight, math.floor(leg.ankle.x / TREAD))) end print('stair blend', res.debug.stairBlend, 'drop', res.bodyDrop) end
+print(string.format("max shoe-to-foot error: %.4f", maxShoeErr))
 print(string.format("world=%s dir=%d stair frames=%d  max |drop|=%.2f  max solver err=%.3f", tostring(WORLD), DIR, stairFrames, maxAbsDropFlat, maxFootErr))
 print(string.format("max per-frame world body height change: %.2f (origin pops %d per step)", maxDropJump, RISE))

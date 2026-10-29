@@ -302,7 +302,8 @@ end
 -- scans the mesh once: which bones actually deform vertices, and where the
 -- soles of the feet are in bind pose
 local function AnalyzeMesh(model, footBones)
-	local result = { weighted = {}, hasWeights = false, footSoleZ = nil, lowestZ = nil, footLength = 0, footWidth = 0, footVerts = 0 }
+	local result = { weighted = {}, hasWeights = false, footSoleZ = nil, lowestZ = nil, footLength = 0, footWidth = 0, footVerts = 0, centroids = {} }
+	local sums, counts = {}, {}
 	local meshes = util.GetModelMeshes(model)
 	if not meshes then return result end
 
@@ -323,6 +324,11 @@ local function AnalyzeMesh(model, footBones)
 						result.weighted[bone] = true
 						result.hasWeights = true
 						if footBones[bone] and (w.weight or 0) >= 0.3 then onFoot = true end
+						if (w.weight or 0) >= 0.3 then
+							local sum = sums[bone]
+							if sum then sum:Add(pos) else sums[bone] = Vector(pos) end
+							counts[bone] = (counts[bone] or 0) + 1
+						end
 					end
 				end
 				if onFoot then
@@ -335,6 +341,11 @@ local function AnalyzeMesh(model, footBones)
 				end
 			end
 		end
+	end
+
+	-- bind pose centre of the geometry each bone mainly drives
+	for bone, sum in pairs(sums) do
+		result.centroids[bone] = sum / counts[bone]
 	end
 
 	if lowestZ < math.huge then result.lowestZ = lowestZ end
@@ -431,6 +442,75 @@ local function BuildBoneSet(ply, model)
 		end
 	end
 	-- without weight data we cant tell hair from helpers, so we leave them alone
+
+	-- foot followers: geometry skinned around a foot (shoes, socks, heels,
+	-- anklets) to bones that are NOT children of the foot. some models hang
+	-- those bones straight off the pelvis; the animation keeps them on the foot,
+	-- but when the ik moves the foot they would be left behind (shoes floating
+	-- under the stairs). they get the same transform the foot gets.
+	local followers = {}
+	local centroids = mesh.centroids or {}
+	local function FootCentre(foot, toe)
+		if centroids[foot] then return centroids[foot] end
+		if toe and centroids[toe] then return centroids[toe] end
+		-- nothing skinned to the foot itself: use where the bone is right now,
+		-- in model space
+		local m = ply:GetBoneMatrix(foot)
+		if not m then return nil end
+		local ang = ply.GetRenderAngles and ply:GetRenderAngles() or ply:GetAngles()
+		local localPos = WorldToLocal(m:GetTranslation(), angle_zero, ply:GetPos(), Angle(0, ang.y, 0))
+		return localPos / math.max(ply:GetModelScale() or 1, 0.01)
+	end
+	local footCentre = { left = FootCentre(bones.lFoot, bones.lToe), right = FootCentre(bones.rFoot, bones.rToe) }
+	if mesh.hasWeights and (footCentre.left or footCentre.right) then
+		local radius = mesh.footLength and mesh.footLength > 0 and math.Clamp(mesh.footLength * 0.8, 4, 14) or 7
+		local legBones = { [bones.lThigh] = true, [bones.rThigh] = true, [root] = true }
+		local candidates = {}
+		for bone, centre in pairs(centroids) do
+			local inLeg = legBones[bone]
+				or IsAncestor(ply, bones.lThigh, bone, 256) or IsAncestor(ply, bones.rThigh, bone, 256)
+				or (bones.leanBone and (bone == bones.leanBone or IsAncestor(ply, bones.leanBone, bone, 256)))
+			if bone < count and not inLeg and not IsHelperName(ply:GetBoneName(bone)) then
+				local bestSide, bestDist = nil, radius
+				for side, fc in pairs(footCentre) do
+					local d = centre:Distance(fc)
+					if d < bestDist then bestSide, bestDist = side, d end
+				end
+				if bestSide then candidates[bone] = bestSide end
+			end
+		end
+
+		local auxSet = {}
+		for _, b in ipairs(auxRoots) do auxSet[b] = true end
+		for bone, side in pairs(candidates) do
+			-- only the topmost bone of a follower chain, its children come along
+			local nested = false
+			local top, cur = bone, ply:GetBoneParent(bone)
+			while cur and cur >= 0 do
+				if candidates[cur] then nested = true end
+				top = cur
+				cur = ply:GetBoneParent(cur)
+			end
+			if not nested then
+				local parent = ply:GetBoneParent(bone)
+				local rootLevel = not parent or parent < 0
+				followers[#followers + 1] = {
+					bone = bone,
+					side = side,
+					parent = rootLevel and -1 or parent,
+					-- its parent already moves down with the body drop
+					shifted = not rootLevel and (top == root or auxSet[top] == true),
+				}
+				if rootLevel and auxSet[bone] then
+					auxSet[bone] = nil
+					for i = #auxRoots, 1, -1 do
+						if auxRoots[i] == bone then table.remove(auxRoots, i) end
+					end
+				end
+			end
+		end
+	end
+	bones.followers = followers
 	bones.auxRoots = auxRoots
 	bones.boneCount = count
 	bones.valid = true
@@ -519,6 +599,7 @@ function IKFoot.MeasureModel(ply)
 		meshFootWidth = mesh.footWidth or 0,
 		meshFootVertCount = mesh.footVerts or 0,
 		auxRootCount = #bones.auxRoots,
+		followerCount = #bones.followers,
 		boneCount = bones.boneCount,
 		rootBone = ply:GetBoneName(bones.root) or tostring(bones.root),
 	}
@@ -558,7 +639,7 @@ function IKFoot.AutoApplyModelSettings(ply)
 		Color(100, 255, 100), "[IK Foot] ",
 		Color(255, 255, 255), "Auto-configured for ",
 		Color(100, 200, 255), modelShort,
-		Color(255, 255, 255), string.format(" (leg=%.0f, sole=%+.2f, scale=%.2f, extra roots=%d)", info.legLength, info.soleOffset, info.scale, info.auxRootCount)
+		Color(255, 255, 255), string.format(" (leg=%.0f, sole=%+.2f, scale=%.2f, extra roots=%d, foot followers=%d)", info.legLength, info.soleOffset, info.scale, info.auxRootCount, info.followerCount)
 	)
 end
 

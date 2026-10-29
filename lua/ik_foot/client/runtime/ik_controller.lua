@@ -83,8 +83,12 @@ function Controller.Calculate(ply, sk, bones, P)
 	}
 	local seed = math.Clamp(math.min(footH.left, footH.right), 0.5 * scale, 10 * scale)
 	local restH
-	if P.dynamic_sole and onGround and not crouch.inTransition and state.stepper.blend < 0.01 then
-		restH = State.UpdateRestHeight(state, math.min(footH.left, footH.right), dt, seed)
+	-- learn only from a foot that is really planted in the animation (barely
+	-- moving in the world), never from transitions or a foot mid-swing
+	local lowSide = footH.left <= footH.right and "left" or "right"
+	local lowPlanted = (state.legs[lowSide].footSpeed or math.huge) < 25 * scale
+	if P.dynamic_sole and onGround and lowPlanted and not crouch.inTransition and state.stepper.blend < 0.01 then
+		restH = State.UpdateRestHeight(state, footH[lowSide], dt, seed)
 	else
 		restH = state.restHeight or seed
 	end
@@ -307,6 +311,8 @@ function Controller.Calculate(ply, sk, bones, P)
 
 		local solved = Solver.SolveLeg(skLeg, drop, foot.target, footAng, bodyFwd)
 		legsOut[side] = {
+			footWorld = solved and footAng or skLeg.footAng,
+			footFinal = solved and solved.ankle or (skLeg.footPos - Vector(0, 0, drop)),
 			thigh = solved and solved.thigh or Angle(),
 			calf = solved and solved.calf or Angle(),
 			foot = solved and solved.foot or Angle(),
@@ -323,6 +329,26 @@ function Controller.Calculate(ply, sk, bones, P)
 			procPhase = foot.proc and foot.proc.phase or "off",
 			procT = foot.proc and foot.proc.t or 0,
 		}
+	end
+
+	-- === foot followers (shoes etc. not parented to the foot) ===
+	-- keep each one where it sits relative to the animated foot, but relative
+	-- to the solved foot instead
+	local followersOut = {}
+	local modelScale = math.max(ply:GetModelScale() or 1, 0.01)
+	for i, f in ipairs(bones.followers or {}) do
+		local fsk = sk.followers and sk.followers[i]
+		local leg = legsOut[f.side]
+		if fsk and leg then
+			local skLeg = sk[f.side]
+			local relPos, relAng = WorldToLocal(fsk.pos, fsk.ang, skLeg.footPos, skLeg.footAng)
+			local ikPos, ikAng = LocalToWorld(relPos, relAng, leg.footFinal, leg.footWorld)
+			-- the parent may already have moved down with the body
+			local shift = f.shifted and Vector(0, 0, -drop) or vector_origin
+			local worldDelta = ikPos - fsk.pos - shift
+			local localDelta = WorldToLocal(worldDelta, angle_zero, vector_origin, fsk.parentAng)
+			followersOut[i] = { pos = localDelta / modelScale, ang = Solver.LocalDelta(fsk.ang, ikAng) }
+		end
 	end
 
 	-- === lean ===
@@ -361,6 +387,7 @@ function Controller.Calculate(ply, sk, bones, P)
 		rRequiredDrop = feet.right.d,
 		left = legsOut.left,
 		right = legsOut.right,
+		followers = followersOut,
 		scan = scan,
 		debug = {
 			velocity2D = vel2D, vertVel = velZ,
@@ -374,6 +401,7 @@ function Controller.Calculate(ply, sk, bones, P)
 			treadsPerStep = treadsPerStep or 0,
 			originJump = jump, landDip = body.landDip,
 			auxRoots = #bones.auxRoots,
+			followers = #(bones.followers or {}),
 		},
 	}
 end
@@ -433,7 +461,7 @@ function Controller.DrawDebug(ply, result)
 			string.format("PLANTED L/R: %s/%s  REACHED L/R: %s/%s", l.planted and "Y" or "N", r.planted and "Y" or "N", l.reached and "Y" or "N", r.reached and "Y" or "N"),
 			string.format("FOOT SPD L/R: %.1f / %.1f", l.footSpeed or 0, r.footSpeed or 0),
 			string.format("IDLE: %s (%.2f)", d.idleActive and "ON" or "OFF", d.idleCandidateTime or 0),
-			string.format("SCALE: %.2f  LEG: %.1f  REST H: %.2f  SOLE: %+.2f  EXTRA ROOTS: %d", d.modelScale or 1, d.measuredLeg or 0, d.restHeight or 0, d.soleCorrection or 0, d.auxRoots or 0),
+			string.format("SCALE: %.2f  LEG: %.1f  REST H: %.2f  SOLE: %+.2f  EXTRA ROOTS: %d  FOOT FOLLOWERS: %d", d.modelScale or 1, d.measuredLeg or 0, d.restHeight or 0, d.soleCorrection or 0, d.auxRoots or 0, d.followers or 0),
 			string.format("STAIRS: %s (%.0f%%)  %s  DEPTH: %.1f  RISE: %.1f  TREADS/STEP: %d", d.stairMode and "ON" or "OFF", (d.stairBlend or 0) * 100, d.stairAscending and "UP" or "DOWN", d.stairDepth or 0, d.stairRise or 0, d.treadsPerStep or 0),
 			string.format("STEP L: %s %.2f   R: %s %.2f", l.procPhase, l.procT or 0, r.procPhase, r.procT or 0),
 		}

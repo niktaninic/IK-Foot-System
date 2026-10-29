@@ -31,6 +31,7 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Treads per step only goes up when one tread per step would exceed `ik_foot_stair_max_cadence`
   (GMod's 200 u/s is ~3.8 m/s, so at that speed it takes two stairs per step, like a person would).
   At sprint speeds where no believable stair gait exists it blends back to the animation.
+- Standing still on stairs, a foot left far from under the body takes one calm step onto the tread under the hips.
 - Source moves the player origin up a whole step in one tick. The body used to pop by the full step height;
   those discrete jumps are now detected and absorbed, with adaptive smoothing on fast climbs.
 
@@ -43,6 +44,10 @@ Inverse kinematics foot placement system for Garry's Mod that makes player model
 - Leg chains are validated (calf under thigh, foot under calf). Rigs with non-ValveBiped names are detected
   through the hierarchy, skipping twist bones. Broken rigs are rejected instead of half-applied.
 - Manipulations are removed from the old bone indices when a model changes.
+- Foot followers: geometry skinned around a foot to bones that are not children of the foot (shoes hanging
+  off the pelvis on some models) now gets the same transform as the solved foot instead of staying behind.
+- PAC3: with pac parts worn, pac defers bone manipulations by a frame; the IK now writes its own delta
+  directly and mirrors it into pac's bone table, so it never computes on top of its own previous result.
 
 ### Math
 - Old knee solve: `asin(lift / (leg/2)) * 1.7` applied as thigh -k / calf +k. That keeps the calf parallel
