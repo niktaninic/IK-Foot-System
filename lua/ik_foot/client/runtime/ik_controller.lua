@@ -80,6 +80,10 @@ function Controller.Calculate(ply, sk, bones, P)
 	-- the teleport test needs the real frame time: after a hitch (loading, alt
 	-- tab) the capped dt would make normal movement look like a teleport
 	local frameDt = math.max(FrameTime(), 1 / 1000)
+	local prevOrigin = state.body.lastOrigin
+	-- vertical motion of the origin relative to the ground it stands on
+	-- (walking up a slope, a stair pop; not a lift carrying the player)
+	local originRise = prevOrigin and (origin.z - prevOrigin.z - groundVel.z * frameDt) or 0
 	local jump, teleport = State.ConsumeOriginJump(state, origin, vel + groundVel, frameDt, onGround, scale)
 	if teleport then
 		-- respawn nearby, teleporter, admin goto, big network correction: all
@@ -88,7 +92,7 @@ function Controller.Calculate(ply, sk, bones, P)
 		State.SoftRecover(ply)
 		state = State.Get(ply)
 		State.ConsumeOriginJump(state, origin, vel + groundVel, frameDt, onGround, scale)
-		jump = 0
+		jump, originRise = 0, 0
 	end
 	local crouch = State.UpdateCrouch(state, ply:Crouching(), dt)
 	local body = state.body
@@ -291,9 +295,14 @@ function Controller.Calculate(ply, sk, bones, P)
 
 		local speed = State.MeasureFootSpeed(leg, F, dt)
 		local dRaw = 0
+		local slide = 0
 		if not skipAnimSampling then
 			local samples = RT.Ground.SampleFoot(F, bodyFwd, traceStartZ, groundDist, side == "left", scale, sole, maxSurfaceSpeed)
-			local contact = RT.Ground.ResolveContact(samples, F)
+			-- the sole gets turned toward the ground normal by about this much
+			-- (see the foot angle below): heights are compared along that plane
+			local soleNormal = Lerp3(onGround and P.foot_rotation_scale * plantW[side] or 0, UP, leg.normal)
+			if soleNormal:LengthSqr() > 0.001 then soleNormal:Normalize() else soleNormal = Vector(UP) end
+			local contact = RT.Ground.ResolveContact(samples, F, soleNormal)
 			local depth = origin.z - contact.highestZ
 			if contact.hasHit and onGround and depth > stepSize and IsDropOff(leg, F, contact.highestZ) then
 				contact.hasHit = false
@@ -302,6 +311,9 @@ function Controller.Calculate(ply, sk, bones, P)
 			foot.contact = contact
 
 			local groundZ = P.anti_clip and contact.highestZ or contact.position.z
+			-- the ankle sits restH above the sole along the sole's normal, so
+			-- above a tilted sole it is restH / cos(tilt) high
+			groundZ = groundZ + restH * (1 / math.max(soleNormal.z, 0.7) - 1)
 			if leg.hadContact and not contact.hasHit and onGround then
 				Event(side, "contact_lost", { foot = F, samples = contact.hitCount, drop_off = contact.dropOff })
 			end
@@ -320,6 +332,20 @@ function Controller.Calculate(ply, sk, bones, P)
 				scale = scale,
 			})
 			if lockZ then groundZ = lockZ end
+			-- the ground under a foot moving along the plane it stood on last
+			-- frame (a slope; a planted foot the animation slides a little)
+			-- changes continuously and is carried over as it is: smoothing it
+			-- only made the foot lag behind the slope. what that plane does not
+			-- explain (an edge, a seam, a new lock) is what gets smoothed
+			if onGround and contact.hasHit then
+				if leg.lastGround then
+					slide = State.PlaneZ(leg.lastGround, leg.lastGroundNormal, F) - leg.lastGround.z
+				end
+				leg.lastGround = Vector(F.x, F.y, groundZ)
+				leg.lastGroundNormal = Vector(lockZ and leg.lockNormal or contact.normal)
+			else
+				leg.lastGround = nil
+			end
 
 			if onGround and contact.hasHit then
 				dRaw = origin.z - groundZ
@@ -328,10 +354,22 @@ function Controller.Calculate(ply, sk, bones, P)
 			local nTarget = (onGround and contact.hasHit) and contact.normal or UP
 			leg.normal = Lerp3(ExpBlend(dt, rotSmoothTime), leg.normal, nTarget)
 			if leg.normal:LengthSqr() > 0.001 then leg.normal:Normalize() else leg.normal = Vector(UP) end
+		else
+			-- the stepper places this foot: the ground plane it remembers goes stale
+			leg.lastGround = nil
 		end
 
-		-- shift smoothed state with discrete origin jumps so the foot stays put in world
-		if leg.drop then leg.drop = leg.drop + jump end
+		-- the smoothing is for the ground (seams, edges), not for the player
+		-- moving. while this foot stands on the ground the smoothed value moves
+		-- with the origin, so a planted foot stays put in world space: on a
+		-- slope the origin climbs every frame and the lagging value used to
+		-- lift the foot ~2 units walking up (and sink it walking down). in the
+		-- air only the discrete pops (stairs) are carried over
+		local grounded = not skipAnimSampling and onGround and foot.contact ~= nil and foot.contact.hasHit
+		if leg.drop then
+			leg.drop = leg.drop + ((grounded and leg.wasGrounded) and (originRise - slide) or jump)
+		end
+		leg.wasGrounded = grounded
 		leg.drop, leg.dropVel = State.Spring(leg.drop or dRaw, leg.dropVel or 0, dRaw, smoothTime * 0.6, dt)
 
 		foot.dAnim = leg.drop

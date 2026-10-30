@@ -150,10 +150,19 @@ function State.MeasureFootSpeed(footState, rawFootPos, dt)
 	return footState.footSpeed
 end
 
--- foot lock. while the animated foot is planted we keep using the contact
--- height it was planted on instead of re-tracing every frame. this is what
--- stops feet flickering between two heights when they hover over a step edge
--- or a seam in the floor. (the old lock only ever affected the debug overlay)
+-- height of the plane through `p` with normal `n` at the horizontal position of `q`
+local function PlaneZ(p, n, q)
+	n = n or vector_up -- a lock kept across a lua refresh from an older build
+	return p.z - (n.x * (q.x - p.x) + n.y * (q.y - p.y)) / math.max(n.z, 0.5)
+end
+State.PlaneZ = PlaneZ
+
+-- foot lock. while the animated foot is planted we keep using the ground it
+-- was planted on instead of re-tracing every frame. this is what stops feet
+-- flickering between two heights when they hover over a step edge or a seam
+-- in the floor. the lock is the ground plane, not a fixed height: animations
+-- let a planted foot slide a few units, and on a slope a fixed height left it
+-- floating (or sunk) by slide * slope (4 units on a 27 deg ramp in the test)
 function State.UpdateFootLock(footState, data)
 	footState.released = false
 	local contact = data.contact
@@ -172,7 +181,7 @@ function State.UpdateFootLock(footState, data)
 		local dx = data.rawFootPos.x - footState.lockPos.x
 		local dy = data.rawFootPos.y - footState.lockPos.y
 		local dist2D = math.sqrt(dx * dx + dy * dy)
-		local heightJump = math.abs(data.groundZ - footState.lockPos.z)
+		local heightJump = math.abs(data.groundZ - PlaneZ(footState.lockPos, footState.lockNormal, data.rawFootPos))
 		local wantsRelease = dist2D > releaseDist
 			or (data.footSpeed > releaseSpeed and not data.idleActive)
 			or (data.plantWeight < 0.4 and not data.idleActive)
@@ -192,18 +201,22 @@ function State.UpdateFootLock(footState, data)
 			-- same height the unlocked path uses (anti-clip highest point or the
 			-- cluster average), otherwise acquiring the lock pops the foot
 			footState.lockPos = Vector(data.rawFootPos.x, data.rawFootPos.y, data.groundZ)
+			footState.lockNormal = Vector(contact.normal or vector_up)
 			footState.lockTime = data.now
 			footState.planted = true
 		end
 	end
+	if not footState.lockPos then return nil end
 
+	local lockZ = PlaneZ(footState.lockPos, footState.lockNormal, data.rawFootPos)
 	-- drift guard: if the planted contact is far below/above what the traces
 	-- see right under the foot by more than an acquire distance, re-plant
-	if footState.lockPos and math.abs(data.groundZ - footState.lockPos.z) > acquireDist and data.plantWeight > 0.85 then
-		footState.lockPos.z = data.groundZ
+	if math.abs(data.groundZ - lockZ) > acquireDist and data.plantWeight > 0.85 then
+		footState.lockPos = Vector(data.rawFootPos.x, data.rawFootPos.y, data.groundZ)
+		footState.lockNormal = Vector(contact.normal or vector_up)
+		lockZ = data.groundZ
 	end
-
-	return footState.lockPos and footState.lockPos.z or nil
+	return lockZ
 end
 
 -- source moves the player origin up/down a whole step in one tick when it

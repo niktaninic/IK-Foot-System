@@ -141,15 +141,26 @@ function Ground.SampleFoot(footPos, forward, traceStartZ, groundDist, isLeft, sc
 	return samples
 end
 
-function Ground.ResolveContact(samples, fallbackPos)
+-- planeNormal: how the sole will be tilted (nil = flat). every sample is
+-- carried along that plane to right under the ankle (fallbackPos), so the
+-- heights compare where it matters: on a slope the toe sample is higher than
+-- the ground under the ankle only because of the slope (the old flat
+-- comparison lifted the foot by that and dropped heel and centre from the
+-- cluster), at a curb or a step edge it really is higher
+function Ground.ResolveContact(samples, fallbackPos, planeNormal)
+	local n = planeNormal or vector_up
+	local nz = math.max(n.z, 0.5)
+	local ax, ay = fallbackPos.x, fallbackPos.y
 	-- find the highest valid hit first so we can cluster around it.
 	-- this stops low-side samples (the "air" side of a curb) from dragging
 	-- the contact position down into geometry or off into space.
 	local highestZ = -math.huge
 	for _, name in ipairs(SAMPLE_NAMES) do
 		local s = samples[name]
-		if s and s.hit and s.hitPos.z > highestZ then
-			highestZ = s.hitPos.z
+		if s and s.hit then
+			local p = s.hitPos
+			s.soleZ = p.z - (n.x * (ax - p.x) + n.y * (ay - p.y)) / nz
+			if s.soleZ > highestZ then highestZ = s.soleZ end
 		end
 	end
 	local clusterFloor = highestZ - CLUSTER_TOLERANCE
@@ -162,10 +173,10 @@ function Ground.ResolveContact(samples, fallbackPos)
 
 	for _, name in ipairs(SAMPLE_NAMES) do
 		local s = samples[name]
-		if s and s.hit and s.hitPos.z >= clusterFloor then
+		if s and s.hit and s.soleZ >= clusterFloor then
 			local w = SAMPLE_WEIGHTS[name] or 1
 			totalWeight = totalWeight + w
-			zSum = zSum + s.hitPos.z * w
+			zSum = zSum + s.soleZ * w
 			normalSum:Add(s.normal * w)
 			hitCount = hitCount + 1
 			surfaceWeights[s.surfaceType] = (surfaceWeights[s.surfaceType] or 0) + w
@@ -197,8 +208,9 @@ function Ground.ResolveContact(samples, fallbackPos)
 		hasHit = hitCount > 0,
 		hitCount = hitCount,
 		position = pos,
-		-- top of whatever is under the foot. used by anti-clip so a foot that
-		-- straddles an edge rests on the edge instead of sinking into it
+		-- top of whatever is under the foot (along the sole plane, under the
+		-- ankle). used by anti-clip so a foot that straddles an edge rests on
+		-- the edge instead of sinking into it
 		highestZ = hitCount > 0 and highestZ or pos.z,
 		normal = normal,
 		samples = samples,

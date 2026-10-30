@@ -21,6 +21,12 @@ local function Clip(x)
   return math.min(math.max((x + TREAD) * RISE / TREAD, 0), STEPS * RISE)
 end
 local function Phys(x) return math.max(H(x), Clip(x)) end
+-- surface normal of the visible ground (treads and flats are level)
+local RAMP_N = Vector(-0.5, 0, 1):GetNormalized()
+local function N(x)
+  if WORLD == "ramp" and x > 0 and x < 120 then return Vector(RAMP_N.x, RAMP_N.y, RAMP_N.z) end
+  return Vector(0, 0, 1)
+end
 local function MaxOf(f, x0, x1) local m = -1e9 for x = x0, x1, 0.25 do m = math.max(m, f(x)) end return m end
 local function HMax(x0, x1) return MaxOf(H, x0, x1) end
 
@@ -43,7 +49,7 @@ local function trace(t, hull)
   local top = hull and MaxOf(f, x - 1.5, x + 1.5) or f(x)
   for k in pairs(out) do out[k] = nil end
   if t.start.z >= top and t.endpos.z <= top then
-    out.Hit = true; out.HitPos = Vector(t.start.x, t.start.y, top); out.HitNormal = Vector(0,0,1)
+    out.Hit = true; out.HitPos = Vector(t.start.x, t.start.y, top); out.HitNormal = N(x)
     out.HitWorld = true; out.Entity = NULL; out.StartSolid = false
   else
     out.Hit = false; out.HitPos = Vector(t.endpos); out.HitNormal = Vector(0,0,1); out.HitWorld = false; out.Entity = NULL
@@ -163,6 +169,7 @@ local replants, lastReason = 0, {}
 resumeDropErr, wasHidden = nil, false
 ledgeDrop, ledgeAnkleMin = -math.huge, math.huge
 maxContactDepth, dropOffFrames = -math.huge, 0
+plantedMin, plantedMax = math.huge, -math.huge
 for i = 1, 60 * 5 do
   now = now + dt; frame = frame + 1
   -- source movement: origin snaps to the highest ground under the 32x32 hull
@@ -209,6 +216,18 @@ for i = 1, 60 * 5 do
     local c = res[side].contact
     if c and c.hasHit then maxContactDepth = math.max(maxContactDepth, ply.pos.z - c.highestZ) end
     if c and c.dropOff then dropOffFrames = dropOffFrames + 1 end
+  end
+  -- planted feet in animation mode: ankle height above the ground right
+  -- under it, minus REST H (0 on flat ground; restH * (1/cos - 1) on a slope
+  -- with the foot turned flat on it)
+  if res.debug.stairBlend == 0 and now > 0.5 then
+    for _, side in ipairs({"left", "right"}) do
+      local leg = res[side]
+      if leg.planted and leg.ankle and leg.reached then
+        local h = leg.ankle.z - H(leg.ankle.x) - res.debug.restHeight
+        plantedMin, plantedMax = math.min(plantedMin, h), math.max(plantedMax, h)
+      end
+    end
   end
   if WORLD == "ledge" and STOPAT and now > STOPAT + 0.5 then
     ledgeDrop = math.max(ledgeDrop, res.bodyDrop)
@@ -324,7 +343,8 @@ RESULT = { nan = nanFrames, restepLoops = restepLoops, idleBothSwing = idleBothS
   float = maxFloat, maxSkip = maxSkip, sameFootTwice = skips, shoeErr = maxShoeErr, shoeAngErr = maxShoeAngErr,
   minRest = minRest, maxRest = maxRest, stairFrames = stairFrames, replants = replants,
   resumeDropErr = resumeDropErr, ledgeDrop = ledgeDrop, ledgeAnkleMin = ledgeAnkleMin, maxDropJump = maxDropJump,
-  maxContactDepth = maxContactDepth, dropOffFrames = dropOffFrames }
+  maxContactDepth = maxContactDepth, dropOffFrames = dropOffFrames, plantedMin = plantedMin, plantedMax = plantedMax }
+print(string.format("planted feet (animation mode): ankle above the ground under it minus REST H: %.2f .. %.2f", plantedMin, plantedMax))
 print(string.format("deepest foot contact below the origin %.1f, frames with the foot over a drop-off %d", maxContactDepth, dropOffFrames))
 if HIDE_AT then print(string.format("resumed after %.2f s hidden: |drop - desired| on the first frame %.2f, replants %d", HIDE_FOR or 0.5, resumeDropErr or -1, replants)) end
 if WORLD == "ledge" then print(string.format("ledge %.0f deep: max body drop %.2f, lowest ankle z %.2f", LEDGE_DROP, ledgeDrop, ledgeAnkleMin)) end

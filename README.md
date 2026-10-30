@@ -52,6 +52,13 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
   instead of resuming from the old locks and springs (the body was 10 units off after 0.3 s on stairs).
 - Settings received over the network are range-checked on every client and NaN falls back to the default;
   presets can only set the addon's own cvars.
+- Slopes: planted feet floated up to 6 units above a 27 deg ramp walking up and sank 2.4 units into it
+  walking down. Three causes: anti-clip compared the five ground samples flat (the toe sample on an upslope
+  is higher only because of the slope), the foot lock held a fixed height while the animation slid the
+  foot along the slope, and the per-foot smoothing lagged behind the origin climbing the slope. Samples
+  are now compared along the plane the sole will be turned to, the lock holds the ground plane, and only
+  what that plane does not explain (edges, seams) is smoothed. Now 0 to 1.3 units on the same ramp
+  (the default 80 % foot alignment leaves about 0.8 by geometry).
 
 ## Diagnostics
 

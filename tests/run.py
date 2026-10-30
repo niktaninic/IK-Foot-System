@@ -39,7 +39,8 @@ expect("bones", "detection failures", g.BONES_FAILS == 0, g.BONES_FAILS)
 g = run("test_pac.lua").globals()
 expect("pac", "layer failures", g.PAC_FAILS == 0, g.PAC_FAILS)
 for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-1", "SPEED=200; DIR=-1",
-              'SPEED=90; WORLD="flat"', 'SPEED=90; WORLD="curb"', 'SPEED=90; WORLD="ramp"', "SPEED=90; STOPAT=1.37",
+              'SPEED=90; WORLD="flat"', 'SPEED=90; WORLD="curb"', 'SPEED=90; WORLD="ramp"', 'SPEED=90; WORLD="ramp"; DIR=-1',
+              'SPEED=90; WORLD="ramp"; STRAFE=true', "SPEED=90; STOPAT=1.37",
               "SPEED=90; STOPAT=1.45; RESUMEAT=1.7", "SPEED=90; STOPAT=1.2; TURN=true", "SPEED=90; STRAFE=true",
               "SPEED=90; DIR=-1; STOPAT=1.5", "SPEED=90; TELEPORT_AT=1.0", "SPEED=90; LOWFPS=true",
               'SPEED=90; MODELSCALE=1.5; FOLLOWER_KIND="body"', 'SPEED=90; FOLLOWER_KIND="calf"',
@@ -71,6 +72,12 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
         expect(setup, "same foot twice", r.sameFootTwice == 0, r.sameFootTwice)
     if "REST_DIP" in setup and ("EXPECTED_REST" in setup or "SPEED=0" in setup):
         expect(setup, "REST H kept through bad reads", r.minRest > 2.5, r.minRest)
+    if 'WORLD="ramp"' in setup:
+        # foot turned 80 % onto a 27 deg slope: ~0.8 above by geometry, kinks at both ends
+        expect(setup, "planted foot above a slope", r.plantedMax < 1.6, r.plantedMax)
+        expect(setup, "planted foot sunk into a slope", r.plantedMin > -0.3, r.plantedMin)
+    if ('WORLD="flat"' in setup or 'WORLD="curb"' in setup) and "REST_DIP" not in setup:
+        expect(setup, "planted foot height on level ground", -0.3 < r.plantedMin and r.plantedMax < 0.3, (r.plantedMin, r.plantedMax))
     if "clipstairs" in setup:
         expect(setup, "stepper engaged under a clip ramp", r.stairFrames > 60, r.stairFrames)
     if "ledge" in setup:
