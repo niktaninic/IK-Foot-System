@@ -170,6 +170,7 @@ resumeDropErr, wasHidden = nil, false
 ledgeDrop, ledgeAnkleMin = -math.huge, math.huge
 maxContactDepth, dropOffFrames = -math.huge, 0
 plantedMin, plantedMax = math.huge, -math.huge
+maxBodyAccel, lastBodyV = 0, nil
 for i = 1, 60 * 5 do
   now = now + dt; frame = frame + 1
   -- source movement: origin snaps to the highest ground under the 32x32 hull
@@ -307,7 +308,16 @@ for i = 1, 60 * 5 do
   end
   -- body height in WORLD space must be continuous even though origin pops a full step
   local bodyZ = ply.pos.z - res.bodyDrop
-  if lastDrop and not res.debug.teleport then maxDropJump = math.max(maxDropJump, math.abs(bodyZ - lastDrop)) end
+  if lastDrop and not res.debug.teleport then
+    maxDropJump = math.max(maxDropJump, math.abs(bodyZ - lastDrop))
+    -- jerk: how much the body's vertical speed changes from one frame to the
+    -- next (a smooth wave stays small, a snap does not)
+    local v = bodyZ - lastDrop
+    if lastBodyV and now > 0.6 then maxBodyAccel = math.max(maxBodyAccel, math.abs(v - lastBodyV)) end
+    lastBodyV = v
+  else
+    lastBodyV = nil
+  end
   if TRACEB and math.abs(bodyZ - (lastDrop or bodyZ)) > (BTH or 4) then print(string.format("BODY t=%.3f x=%.1f oz=%.0f drop=%.2f jump=%.1f bz=%.2f blend=%.2f L=%.1f R=%.1f", now, ply.pos.x, ply.pos.z, res.bodyDrop, res.debug.originJump, bodyZ, res.debug.stairBlend, res.lRequiredDrop, res.rRequiredDrop)) end
   lastDrop = bodyZ
   ::continue::
@@ -343,7 +353,8 @@ RESULT = { nan = nanFrames, restepLoops = restepLoops, idleBothSwing = idleBothS
   float = maxFloat, maxSkip = maxSkip, sameFootTwice = skips, shoeErr = maxShoeErr, shoeAngErr = maxShoeAngErr,
   minRest = minRest, maxRest = maxRest, stairFrames = stairFrames, replants = replants,
   resumeDropErr = resumeDropErr, ledgeDrop = ledgeDrop, ledgeAnkleMin = ledgeAnkleMin, maxDropJump = maxDropJump,
-  maxContactDepth = maxContactDepth, dropOffFrames = dropOffFrames, plantedMin = plantedMin, plantedMax = plantedMax }
+  maxContactDepth = maxContactDepth, dropOffFrames = dropOffFrames, plantedMin = plantedMin, plantedMax = plantedMax,
+  maxBodyAccel = maxBodyAccel }
 print(string.format("planted feet (animation mode): ankle above the ground under it minus REST H: %.2f .. %.2f", plantedMin, plantedMax))
 print(string.format("deepest foot contact below the origin %.1f, frames with the foot over a drop-off %d", maxContactDepth, dropOffFrames))
 if HIDE_AT then print(string.format("resumed after %.2f s hidden: |drop - desired| on the first frame %.2f, replants %d", HIDE_FOR or 0.5, resumeDropErr or -1, replants)) end

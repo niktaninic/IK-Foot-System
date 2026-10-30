@@ -13,6 +13,7 @@ local SIDES = { "left", "right" }
 -- the ik only runs while the player is drawn. a pause longer than this means
 -- the state refers to a pose and place that are gone
 local RESUME_GAP = 0.25
+local REACH_RELEASE_TIME = 0.2
 
 -- kept for api compatibility (old builds had a separate sole feedback loop,
 -- its job is now done by the rest height calibration in State)
@@ -422,6 +423,19 @@ function Controller.Calculate(ply, sk, bones, P)
 	-- unsupported feet are relaxed by up to 12 units
 	local relax = 12 * scale
 	local reachDrop = math.max(minL - (1 - sL) * relax, minR - (1 - sR) * relax) + 0.6 * scale
+	-- a supporting foot that lifts off drops its reach limit within a couple
+	-- of frames, and the body shot up by all that foot had held it down: 10
+	-- units per step walking up a steep slope. the limit is let go of
+	-- gradually instead; tightening (a foot that needs the body lower) still
+	-- applies at once. kept in world space across origin motion. only for the
+	-- animation's own feet: with the stair stepper fully in charge it held the
+	-- body low into the next stair pop and made climbing jerkier
+	local reachHeld = reachDrop
+	if onGround and body.reachHold and procBlend < 0.999 then
+		local held = body.reachHold + originRise
+		reachHeld = math.max(reachDrop, held + (reachDrop - held) * ExpBlend(dt, REACH_RELEASE_TIME * (1 - procBlend)))
+	end
+	body.reachHold = onGround and reachHeld or nil
 
 	local desired = 0
 	local dropLimiter = "in_air"
@@ -432,8 +446,8 @@ function Controller.Calculate(ply, sk, bones, P)
 		local extra = Lerp(unevenFactor, P.extra_body_drop, P.extra_body_drop_uneven) * scale * terrainNeed
 			+ diff * P.uneven_drop_scale * 0.2
 
-		desired = math.max(reachDrop, dLow) + extra
-		dropLimiter = reachDrop >= dLow and "reach" or "lowest_foot"
+		desired = math.max(reachHeld, dLow) + extra
+		dropLimiter = reachHeld >= dLow and (reachHeld > reachDrop + 0.1 and "reach_release" or "reach") or "lowest_foot"
 		-- dont crouch so low that the higher foot's knee would have to fold
 		-- shut. when both cant be satisfied the supporting (lower) foot wins
 		local foldLimit = math.min(maxL, maxR)

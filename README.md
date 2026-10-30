@@ -59,6 +59,9 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
   are now compared along the plane the sole will be turned to, the lock holds the ground plane, and only
   what that plane does not explain (edges, seams) is smoothed. Now 0 to 1.3 units on the same ramp
   (the default 80 % foot alignment leaves about 0.8 by geometry).
+- When a supporting foot lifted off, its reach limit vanished within a frame or two and the body shot up
+  (3 units in one frame walking up a ramp, 0.9 stepping onto a curb). The limit is now released over
+  0.2 s (tightening still applies at once), for the animation's own feet; the stair stepper is unchanged.
 
 ## Diagnostics
 

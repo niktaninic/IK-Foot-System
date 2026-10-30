@@ -76,6 +76,11 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
         # foot turned 80 % onto a 27 deg slope: ~0.8 above by geometry, kinks at both ends
         expect(setup, "planted foot above a slope", r.plantedMax < 1.6, r.plantedMax)
         expect(setup, "planted foot sunk into a slope", r.plantedMin > -0.3, r.plantedMin)
+    if setup == 'SPEED=90; WORLD="ramp"':
+        # the rear foot lifting off used to let the body shoot up 3 units in a frame
+        expect(setup, "body jump walking up a slope", r.maxDropJump < 2, r.maxDropJump)
+    if 'WORLD="curb"' in setup:
+        expect(setup, "body jump stepping onto a curb", r.maxDropJump < 0.7, r.maxDropJump)
     if ('WORLD="flat"' in setup or 'WORLD="curb"' in setup) and "REST_DIP" not in setup:
         expect(setup, "planted foot height on level ground", -0.3 < r.plantedMin and r.plantedMax < 0.3, (r.plantedMin, r.plantedMax))
     if "clipstairs" in setup:
