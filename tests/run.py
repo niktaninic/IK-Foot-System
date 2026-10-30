@@ -79,6 +79,15 @@ for setup in ("", "WITH_PAC=true", 'WITH_PAC=true; PAC_THIGH_PART={p=15,y=10,r=0
         except Exception as exc:  # noqa: BLE001
             FAILS.append("%s | %s invalid json: %s" % (setup, name, exc))
             print("  FAIL %s: %s" % (name, exc))
+    # the fields a bug report needs must be in the dump
+    dump = json.loads(lua.globals().DUMP_JSON)
+    for side in ("left", "right"):
+        leg = dump["current"]["legs"][side]
+        missing = [k for k in ("anim_foot", "target", "target_anim", "solver_ankle", "solver_knee", "hip",
+                               "engine_ankle", "reach", "req", "blend", "contact", "step", "drop_limits")
+                   if k not in leg]
+        expect(setup, "dump %s leg fields" % side, not missing, missing)
+    expect(setup, "dump rest / drop", "rest" in dump["current"] and "drop" in dump["current"], list(dump["current"]))
     expect(setup, "pipeline checks", lua.globals().PIPELINE_FAILS == 0, lua.globals().PIPELINE_FAILS)
 
 print()

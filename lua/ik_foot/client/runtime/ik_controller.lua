@@ -380,7 +380,8 @@ function Controller.Calculate(ply, sk, bones, P)
 		local leg = state.legs[side]
 
 		local groundW = onGround and 1 or 0
-		local animFootAng = AlignToNormal(skLeg.footAng, leg.normal, P.foot_rotation_scale * foot.plantW * groundW)
+		local alignW = P.foot_rotation_scale * foot.plantW * groundW
+		local animFootAng = AlignToNormal(skLeg.footAng, leg.normal, alignW)
 		local footAng = animFootAng
 		if foot.proc then
 			local procAng = skLeg.footAng
@@ -419,6 +420,11 @@ function Controller.Calculate(ply, sk, bones, P)
 			ankle = solved and solved.ankle,
 			reached = solved and solved.reached or false,
 			targetPos = foot.target,
+			targetAnim = foot.targetAnim,
+			targetProc = foot.targetProc,
+			stepBlend = foot.proc and procBlend or 0,
+			alignW = alignW,
+			groundNormal = leg.normal,
 			contact = foot.contact,
 			lockPos = leg.lockPos and Vector(leg.lockPos) or nil,
 			planted = leg.planted,

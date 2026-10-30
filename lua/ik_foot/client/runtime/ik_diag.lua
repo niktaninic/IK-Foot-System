@@ -206,6 +206,10 @@ local function LegSample(leg, readback, detail)
 	local out = {
 		anim_foot = V(leg.animFoot),
 		target = V(leg.targetPos),                 -- requested by contacts / stepper
+		target_anim = V(leg.targetAnim),           -- what the animation + ground alone asks for
+		target_step = V(leg.targetProc),           -- what the stair stepper asks for
+		blend = { step = R(leg.stepBlend), align = R(leg.alignW) }, -- stepper share of target, foot-to-ground tilt weight
+		ground_normal = V(leg.groundNormal, 3),    -- smoothed normal the foot is tilted to
 		solver_ankle = V(leg.ankle),               -- after reach limits
 		solver_knee = V(leg.knee),
 		hip = V(leg.hip),
@@ -622,6 +626,8 @@ function Diag.Report(ply)
 			reach.requested or 0, reach.maxReach or 0, reach.limit and (" " .. reach.limit) or "",
 			leg.contact and (leg.contact.hasHit and string.format("%d hits", leg.contact.hitCount) or "NO HIT") or "stepper",
 			lrb and lrb.ankleErr and string.format("%.2f", lrb.ankleErr) or "n/a"))
+		Line(grey, string.format("      blend: stepper %.2f  ground tilt %.2f   lock age %s",
+			leg.stepBlend or 0, leg.alignW or 0, leg.lockAge and string.format("%.2fs", leg.lockAge) or "-"))
 		if lrb and lrb.ankleErr and lrb.ankleErr > ERR_ENGINE then
 			suspects[#suspects + 1] = string.format("%s foot is drawn %.1fu away from where the solver put it: something else writes leg bones after us (foreign writes: %d)", side, lrb.ankleErr, Diag.stats.foreignWrites or 0)
 		end
