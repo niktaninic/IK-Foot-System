@@ -204,5 +204,37 @@ do
   check("rejected", not b.valid)
 end
 
+-- the bind pose reader (expected REST H) must never leak its hidden model,
+-- also when the engine errors half way
+do
+  local made = {}
+  ClientsideModel = function()
+    local ent = { removed = false }
+    function ent:SetNoDraw() end
+    function ent:LookupSequence(n) return n == "reference" and 0 or -1 end
+    function ent:ResetSequence() end
+    function ent:SetCycle() end
+    function ent:SetupBones() if BIND_FAIL then error("setup failed") end end
+    function ent:LookupBone(n) return n:find("L_Foot", 1, true) and 1 or 2 end
+    function ent:GetBoneMatrix(b) return { GetTranslation = function() return Vector(0, 0, b == 1 and 3.5 or 3.7) end } end
+    function ent:GetPos() return Vector(0, 0, 0) end
+    function ent:Remove() self.removed = true end
+    made[#made + 1] = ent
+    return ent
+  end
+  BIND_FAIL = true
+  local b = RT.GetIKBones(makeModel({ bones = legs(), mesh = feetMesh() }))
+  check("bind read error: hidden model removed", #made == 1 and made[1].removed, #made)
+  check("bind read error: no expected rest", b.profile.bindAnkle == nil)
+  BIND_FAIL = false
+  local b2 = RT.GetIKBones(makeModel({ bones = legs(), mesh = feetMesh() }))
+  local bind = b2.profile.bindAnkle
+  check("bind read: hidden model removed", #made == 2 and made[2].removed)
+  check("bind read: ankle heights", bind and math.abs(bind.left - 3.5) < 1e-6 and math.abs(bind.right - 3.7) < 1e-6)
+  check("expected rest from bind pose", math.abs((RT.GetExpectedRestHeight(b2.profile, 2) or 0) - 7.2) < 1e-6, RT.GetExpectedRestHeight(b2.profile, 2))
+  ClientsideModel = nil
+  print("bind pose reader: removed after error", made[1].removed, "after success", made[2].removed)
+end
+
 BONES_FAILS = fails
 print("bones test fails:", fails)

@@ -423,8 +423,9 @@ end
 -- clientside model; nil when the engine gives us nothing sane
 local function ReadBindAnkles(model, footNames)
 	if not isfunction(ClientsideModel) then return nil end
+	local mdl
 	local ok, res = pcall(function()
-		local mdl = ClientsideModel(model, RENDERGROUP_OTHER)
+		mdl = ClientsideModel(model, RENDERGROUP_OTHER)
 		if not IsValid(mdl) then return nil end
 		mdl:SetNoDraw(true)
 		for _, seqName in ipairs({ "reference", "ragdoll" }) do
@@ -442,9 +443,10 @@ local function ReadBindAnkles(model, footNames)
 			local m = bone and mdl:GetBoneMatrix(bone)
 			if m then out[side] = m:GetTranslation().z - mdl:GetPos().z end
 		end
-		mdl:Remove()
 		return out
 	end)
+	-- outside the pcall: an error half way must not leak the model
+	if IsValid(mdl) then mdl:Remove() end
 	if not ok or not res or not res.left or not res.right then return nil end
 	return res
 end
