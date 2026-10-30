@@ -64,11 +64,14 @@ function RT.GetIKParamBool(ply, key)
 	return ply:GetNWBool(IKFoot.Config.NWName(key), entry and entry.default and true or false)
 end
 
--- all params for one player, read once per frame instead of ~30 lookups per call site
+-- all params for one player. reading ~40 cvars / networked floats (each a
+-- call into the engine, plus range checks) every frame for every player is
+-- wasted work: settings change rarely, a quarter second delay is invisible
+local PARAM_REFRESH = 0.25
 function RT.GetParams(ply)
-	local frame = FrameNumber()
+	local now = RealTime()
 	local cache = ply.IKParamCache
-	if cache and cache._frame == frame then return cache end
+	if cache and cache._time and now >= cache._time and now - cache._time < PARAM_REFRESH then return cache end
 	cache = cache or {}
 	for _, entry in ipairs(IKFoot.Config.entries) do
 		if entry.type == "bool" then
@@ -77,7 +80,7 @@ function RT.GetParams(ply)
 			cache[entry.key] = RT.GetIKParam(ply, entry.key)
 		end
 	end
-	cache._frame = frame
+	cache._time = now
 	ply.IKParamCache = cache
 	return cache
 end

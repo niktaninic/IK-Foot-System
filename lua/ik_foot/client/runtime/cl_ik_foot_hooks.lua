@@ -30,6 +30,17 @@ local function HandleFailure(ply, bones, threshold)
 	end
 end
 
+-- read the pose, solve, apply. a plain function for pcall: an inline closure
+-- was a new garbage object per player per frame
+local function RunIK(ply, bones, params)
+	local skeleton = RT.Apply.BuildSkeleton(ply, bones)
+	if not skeleton then return nil end
+	local result = RT.Controller.Calculate(ply, skeleton, bones, params)
+	if not result then return nil end
+	RT.Apply.ApplyResult(ply, bones, result)
+	return result
+end
+
 local function ProcessPlayer(ply)
 	-- detect death/respawn and hard reset to prevent bone distortion
 	local alive = ply:Alive()
@@ -74,14 +85,7 @@ local function ProcessPlayer(ply)
 	if ply.InvalidateBoneCache then ply:InvalidateBoneCache() end
 	ply:SetupBones()
 
-	local ok, errOrResult = pcall(function()
-		local skeleton = RT.Apply.BuildSkeleton(ply, bones)
-		if not skeleton then return nil end
-		local result = RT.Controller.Calculate(ply, skeleton, bones, params)
-		if not result then return nil end
-		RT.Apply.ApplyResult(ply, bones, result)
-		return result
-	end)
+	local ok, errOrResult = pcall(RunIK, ply, bones, params)
 
 	-- the bones were set up without our manipulations; force the draw that
 	-- follows this hook to set them up again so the ik shows up THIS frame
