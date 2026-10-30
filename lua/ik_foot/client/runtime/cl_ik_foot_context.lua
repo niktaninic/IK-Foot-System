@@ -48,7 +48,9 @@ function RT.GetIKParam(ply, key)
 	end
 	local default = entry and entry.default or 0
 	if isbool(default) then default = default and 1 or 0 end
-	return ply:GetNWFloat(IKFoot.Config.NWName(key), default)
+	local value = ply:GetNWFloat(IKFoot.Config.NWName(key), default)
+	-- another player's settings come from the server: never trust the range
+	return entry and IKFoot.Config.ClampNumber(entry, value) or value
 end
 
 function RT.GetIKParamBool(ply, key)

@@ -1,16 +1,28 @@
 dofile(ROOT .. "/tests/gmod_mock.lua")
 local SPEED = SPEED or 90
 -- world: stairs along +x. tread 12 deep, 8 high, 10 steps, then a flat top
-local TREAD, RISE, STEPS = 12, 8, 10
+local TREAD, RISE, STEPS = TREAD or 12, RISE or 8, 10
+local LEDGE_DROP = LEDGE_DROP or 30
+-- visible geometry
 local function H(x)
   if WORLD == "flat" then return 0 end
   if WORLD == "ramp" then return math.max(0, math.min(x, 120)) * 0.5 end
   if WORLD == "curb" then return x >= 0 and 6 or 0 end
+  if WORLD == "ledge" then return x < 0 and 0 or -LEDGE_DROP end
   if x < 0 then return 0 end
   local k = math.floor(x / TREAD) + 1
   return math.min(k, STEPS) * RISE
 end
-local function HMax(x0, x1) local m = -1e9 for x = x0, x1, 0.25 do m = math.max(m, H(x)) end return m end
+-- "clipstairs": an invisible player clip ramp over the stairs, touching the
+-- nosings (common on source maps). only the player's movement and
+-- MASK_PLAYERSOLID traces collide with it
+local function Clip(x)
+  if WORLD ~= "clipstairs" then return -1e9 end
+  return math.min(math.max((x + TREAD) * RISE / TREAD, 0), STEPS * RISE)
+end
+local function Phys(x) return math.max(H(x), Clip(x)) end
+local function MaxOf(f, x0, x1) local m = -1e9 for x = x0, x1, 0.25 do m = math.max(m, f(x)) end return m end
+local function HMax(x0, x1) return MaxOf(H, x0, x1) end
 
 local now, frame, dt = 0, 0, LOWFPS and 0.1 or 1/60
 function FrameTime() return dt end
@@ -19,7 +31,7 @@ function CurTime() return now end
 function FrameNumber() return frame end
 NULL = {}
 function IsValid(e) return e ~= nil and e ~= NULL and type(e) == "table" and e.valid end
-MASK_PLAYERSOLID = 1
+MASK_PLAYERSOLID, MASK_SOLID = 1, 2
 player = { GetAll = function() return {} end }
 string.StartWith = function(s, p) return s:sub(1, #p) == p end
 function Color(r,g,b,a) return {r=r,g=g,b=b,a=a} end
@@ -27,7 +39,8 @@ util = {}
 local function trace(t, hull)
   local out = t.output or {}
   local x = t.start.x
-  local top = hull and HMax(x - 1.5, x + 1.5) or H(x)
+  local f = t.mask == MASK_PLAYERSOLID and Phys or H
+  local top = hull and MaxOf(f, x - 1.5, x + 1.5) or f(x)
   for k in pairs(out) do out[k] = nil end
   if t.start.z >= top and t.endpos.z <= top then
     out.Hit = true; out.HitPos = Vector(t.start.x, t.start.y, top); out.HitNormal = Vector(0,0,1)
@@ -68,6 +81,8 @@ function ply:GetRenderAngles() return Angle(0, facingYaw, 0) end
 function ply:GetAngles() return Angle(0, facingYaw, 0) end
 function ply:GetGroundEntity() return NULL end
 function ply:GetModelScale() return MODELSCALE or 1 end
+function ply:GetStepSize() return 18 end
+function ply:GetHull() return Vector(-16, -16, 0), Vector(16, 16, 72) end
 
 local function frameAng(dir, hinge)
   local x = dir:GetNormalized(); local z = (hinge - x*hinge:Dot(x)):GetNormalized(); local y = z:Cross(x)
@@ -144,6 +159,10 @@ local idleBothSwing, nanFrames, maxBehind, restepLoops = 0, 0, 0, 0
 local startLog = { left = {}, right = {} }
 local lastStartCount = { left = 0, right = 0 }
 local maxFootErr = 0
+local replants, lastReason = 0, {}
+resumeDropErr, wasHidden = nil, false
+ledgeDrop, ledgeAnkleMin = -math.huge, math.huge
+maxContactDepth, dropOffFrames = -math.huge, 0
 for i = 1, 60 * 5 do
   now = now + dt; frame = frame + 1
   -- source movement: origin snaps to the highest ground under the 32x32 hull
@@ -151,8 +170,13 @@ for i = 1, 60 * 5 do
   if TURN and STOPAT and now > STOPAT then facingYaw = facingYaw + 90 * dt end
   if TELEPORT_AT and not TELEPORTED and now > TELEPORT_AT then ply.pos.x = ply.pos.x + 300; TELEPORTED = true end
   ply.pos.x = ply.pos.x + CURSPEED * dt * DIR
-  ply.pos.z = HMax(ply.pos.x - 16, ply.pos.x + 16)
+  -- the hull rests on the highest solid under it, player clips included
+  ply.pos.z = MaxOf(Phys, ply.pos.x - 16, ply.pos.x + 16)
   if CURSPEED > 0 then phase = phase + dt * CURSPEED / STRIDE * math.pi else phase = math.floor(phase / math.pi + 0.5) * math.pi + math.pi * 0.5 end
+  -- not drawn (first person, out of view): the ik does not run, the player
+  -- keeps moving
+  local hidden = HIDE_AT and now > HIDE_AT and now <= HIDE_AT + (HIDE_FOR or 0.5)
+  if hidden then lastDrop = nil; wasHidden = true; goto continue end
   local sk = skeleton(ply:GetPos(), phase)
   -- pelvis wobbles in the animation: yaw/roll change every frame
   local pelvisAng = Angle(3 * math.sin(phase), (DIR > 0 and 0 or 180) + 15 * math.sin(phase * 0.5), 6 * math.cos(phase))
@@ -170,6 +194,28 @@ for i = 1, 60 * 5 do
   end
   local res = RT.Controller.Calculate(ply, sk, bones, P)
   LASTRES = res
+  if wasHidden then
+    -- a fresh start puts the body where it belongs right away, a stale state
+    -- carries the old drop (+ the whole hidden walk read as a stair pop)
+    resumeDropErr = math.abs(res.bodyDrop - res.debug.desiredDrop)
+    wasHidden = false
+  end
+  for _, side in ipairs({"left", "right"}) do
+    local reason = res[side].stepReason
+    if reason == "replant_out_of_reach" and lastReason[side] ~= reason then replants = replants + 1 end
+    lastReason[side] = reason
+  end
+  for _, side in ipairs({"left", "right"}) do
+    local c = res[side].contact
+    if c and c.hasHit then maxContactDepth = math.max(maxContactDepth, ply.pos.z - c.highestZ) end
+    if c and c.dropOff then dropOffFrames = dropOffFrames + 1 end
+  end
+  if WORLD == "ledge" and STOPAT and now > STOPAT + 0.5 then
+    ledgeDrop = math.max(ledgeDrop, res.bodyDrop)
+    for _, side in ipairs({"left", "right"}) do
+      if res[side].ankle then ledgeAnkleMin = math.min(ledgeAnkleMin, res[side].ankle.z) end
+    end
+  end
   local ms = MODELSCALE or 1
   for i, side in ipairs({"left", "right"}) do
     local f, fsk, out = bones.followers[i], sk.followers[i], res.followers[i]
@@ -245,6 +291,7 @@ for i = 1, 60 * 5 do
   if lastDrop and not res.debug.teleport then maxDropJump = math.max(maxDropJump, math.abs(bodyZ - lastDrop)) end
   if TRACEB and math.abs(bodyZ - (lastDrop or bodyZ)) > (BTH or 4) then print(string.format("BODY t=%.3f x=%.1f oz=%.0f drop=%.2f jump=%.1f bz=%.2f blend=%.2f L=%.1f R=%.1f", now, ply.pos.x, ply.pos.z, res.bodyDrop, res.debug.originJump, bodyZ, res.debug.stairBlend, res.lRequiredDrop, res.rRequiredDrop)) end
   lastDrop = bodyZ
+  ::continue::
 end
 
 local allPlants = {}
@@ -275,7 +322,12 @@ table.sort(rl)
 print(string.format("REST H range after 0.5 s: %.2f .. %.2f (anim rest %.1f, expected %s)  samples: %s", minRest, maxRest, 3, tostring(EXPECTED_REST), table.concat(rl, " ")))
 RESULT = { nan = nanFrames, restepLoops = restepLoops, idleBothSwing = idleBothSwing, penetration = maxPenetration,
   float = maxFloat, maxSkip = maxSkip, sameFootTwice = skips, shoeErr = maxShoeErr, shoeAngErr = maxShoeAngErr,
-  minRest = minRest, maxRest = maxRest }
+  minRest = minRest, maxRest = maxRest, stairFrames = stairFrames, replants = replants,
+  resumeDropErr = resumeDropErr, ledgeDrop = ledgeDrop, ledgeAnkleMin = ledgeAnkleMin, maxDropJump = maxDropJump,
+  maxContactDepth = maxContactDepth, dropOffFrames = dropOffFrames }
+print(string.format("deepest foot contact below the origin %.1f, frames with the foot over a drop-off %d", maxContactDepth, dropOffFrames))
+if HIDE_AT then print(string.format("resumed after %.2f s hidden: |drop - desired| on the first frame %.2f, replants %d", HIDE_FOR or 0.5, resumeDropErr or -1, replants)) end
+if WORLD == "ledge" then print(string.format("ledge %.0f deep: max body drop %.2f, lowest ankle z %.2f", LEDGE_DROP, ledgeDrop, ledgeAnkleMin)) end
 print(string.format("nan frames %d  idle both-feet swings %d  restep loops %d  max planted foot distance %.1f (leg %.1f)", nanFrames, idleBothSwing, restepLoops, maxBehind, 39))
 print(string.format("max shoe-to-foot error: %.4f  angle %.3f deg (followers %s, model scale %.2f)", maxShoeErr, maxShoeAngErr, FOLLOWER_KIND, MODELSCALE or 1))
 print(string.format("world=%s dir=%d stair frames=%d  max |drop|=%.2f  max solver err=%.3f", tostring(WORLD), DIR, stairFrames, maxAbsDropFlat, maxFootErr))

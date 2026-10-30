@@ -15,7 +15,7 @@ function CurTime() return now end
 function FrameNumber() return frame end
 NULL = {}
 function IsValid(e) return e ~= nil and e ~= NULL and type(e) == "table" and (e.valid ~= false) end
-MASK_PLAYERSOLID, RENDERGROUP_OTHER = 1, 0
+MASK_PLAYERSOLID, MASK_SOLID, RENDERGROUP_OTHER = 1, 2, 0
 MOVETYPE_NOCLIP, MOVETYPE_LADDER, MOVETYPE_WALK = 8, 9, 2
 function Color(r, g, b, a) return { r = r, g = g, b = b, a = a } end
 string.StartWith = function(s, p) return s:sub(1, #p) == p end
@@ -350,5 +350,17 @@ for _ = 1, 75 do Frame() end
 local capName = next(FILES)
 check("capture auto saved", capName ~= nil)
 CAPTURE_JSON = capName and FILES[capName]
+
+-- settings arrive over the network (the server forwards each player's own
+-- values to everyone): nan must not get through, inf clamps
+local smoothing = IKFoot.Config.byKey.smoothing
+local nanValue = IKFoot.Config.ClampNumber(smoothing, 0 / 0)
+check("nan setting falls back to its default", nanValue == smoothing.default, nanValue)
+check("inf setting clamps to max", IKFoot.Config.ClampNumber(smoothing, math.huge) == smoothing.max)
+local other = setmetatable({ GetNWFloat = function() return 0 / 0 end }, { __index = ply })
+local remote = RT.GetIKParam(other, "smoothing")
+check("another player's nan setting", remote == smoothing.default, remote)
+local far = setmetatable({ GetNWFloat = function() return 1e9 end }, { __index = ply })
+check("another player's out of range setting", RT.GetIKParam(far, "smoothing") == smoothing.max, RT.GetIKParam(far, "smoothing"))
 PIPELINE_FAILS = fails
 print("pipeline test fails:", fails)

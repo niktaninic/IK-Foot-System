@@ -2,7 +2,7 @@ IKFoot = IKFoot or {}
 
 IKFoot.VERSION = "0.51"
 -- bump with every change that matters for a bug report: dumps record it
-IKFoot.BUILD = "0.51-diag.1"
+IKFoot.BUILD = "0.51-diag.2"
 
 -- bump whenever the meaning of a cvar changes. clients with an older stored
 -- version get the affected cvars reset once (see cl_ik_foot_context.lua)
@@ -53,5 +53,12 @@ function IKFoot.Config.NWName(key)
 end
 
 function IKFoot.Config.ClampNumber(entry, value)
-	return math.Clamp(tonumber(value) or 0, entry.min, entry.max)
+	value = tonumber(value)
+	-- nan passes straight through math.Clamp. it can come from a broken cvar
+	-- or a crafted net message, and the server forwards these values to
+	-- every client
+	if not value or value ~= value then
+		value = tonumber(entry.default) or entry.min
+	end
+	return math.Clamp(value, entry.min, entry.max)
 end

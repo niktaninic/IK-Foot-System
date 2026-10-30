@@ -10,6 +10,9 @@ local LAND_MIN_SPEED = 160
 local LEAN_MAX_ROLL = 8
 local LEAN_MAX_PITCH = 9
 local SIDES = { "left", "right" }
+-- the ik only runs while the player is drawn. a pause longer than this means
+-- the state refers to a pose and place that are gone
+local RESUME_GAP = 0.25
 
 -- kept for api compatibility (old builds had a separate sole feedback loop,
 -- its job is now done by the rest height calibration in State)
@@ -47,6 +50,19 @@ function Controller.Calculate(ply, sk, bones, P)
 	local function Event(side, kind, values)
 		if Diag then Diag.Event(ply, kind, side, values) end
 	end
+
+	-- after a pause (first person, out of view, ik toggled off, model loading)
+	-- the locks, springs and the last origin still describe where the player
+	-- was back then. resuming from them sweeps the feet and the body across
+	-- the gap, or reads the whole walk as one stair pop. start fresh instead
+	-- and keep the calibration
+	local frameNo = FrameNumber()
+	if state.lastFrame and frameNo - state.lastFrame > 1 and now - (state.lastTime or now) > RESUME_GAP then
+		Event(nil, "resume_after_gap", { frames = frameNo - state.lastFrame, seconds = now - state.lastTime })
+		State.SoftRecover(ply)
+		state = State.Get(ply)
+	end
+	state.lastFrame, state.lastTime = frameNo, now
 
 	local legLength = P.leg_length > 0 and P.leg_length or sk.legLength
 	local scale = math.Clamp(legLength / RT.REFERENCE_LEG_LENGTH, 0.4, 2.5)
@@ -215,6 +231,57 @@ function Controller.Calculate(ply, sk, bones, P)
 	end
 
 	-- === per foot ground offset ===
+	-- ground more than a stair step below the player is either the way down
+	-- a staircase or a drop-off: a foot over a ledge or a gap. reaching for a
+	-- drop-off crouched the body to its limit with the leg still dangling in
+	-- the air; such a foot keeps its animated height instead, like the player
+	-- standing on the edge it physically stands on. the two are told apart by
+	-- walking the ground from where the player stands to the foot: stairs get
+	-- there in steps the player can walk (its step size, in world units, the
+	-- model's size does not change the map), a drop-off in one fall
+	local stepSize = (ply.GetStepSize and ply:GetStepSize() or 18) + 1
+	local hullHalf = 16
+	if ply.GetHull then
+		local _, maxs = ply:GetHull()
+		if maxs then hullHalf = math.max(maxs.x, 1) end
+	end
+	local function GroundZ(x, y)
+		local s = RT.Ground.TraceSample(Vector(x, y, traceStartZ), groundDist, sole, maxSurfaceSpeed, false)
+		return s.hit and s.hitPos.z or nil
+	end
+	local function SteppedDown(footPos, footZ)
+		-- the hull rests on the highest ground under it, which is an edge or a
+		-- corner when the ground falls away (going down stairs, standing on a
+		-- ledge). the hull is axis aligned: start the walk at its highest corner
+		local inset = hullHalf - 1
+		local fromX, fromY, prevZ
+		for _, c in ipairs({ { 1, 1 }, { 1, -1 }, { -1, 1 }, { -1, -1 } }) do
+			local x, y = origin.x + c[1] * inset, origin.y + c[2] * inset
+			local z = GroundZ(x, y)
+			if z and (not prevZ or z > prevZ) then fromX, fromY, prevZ = x, y, z end
+		end
+		if not prevZ then return false end
+		local dx, dy = footPos.x - fromX, footPos.y - fromY
+		local n = math.max(1, math.ceil(math.sqrt(dx * dx + dy * dy) / 6))
+		for k = 1, n - 1 do
+			local z = GroundZ(fromX + dx * k / n, fromY + dy * k / n)
+			if not z or prevZ - z > stepSize then return false end
+			prevZ = z
+		end
+		return prevZ - footZ <= stepSize
+	end
+	-- standing at a ledge asks the same question every frame: keep the
+	-- answer while the player and the foot stay where they were
+	local function IsDropOff(leg, footPos, footZ)
+		local c = leg.dropOffCache
+		if c and math.abs(c.x - origin.x) + math.abs(c.y - origin.y) + math.abs(c.z - origin.z) < 1
+			and math.abs(c.fx - footPos.x) + math.abs(c.fy - footPos.y) < 1 and math.abs(c.fz - footZ) < 1 then
+			return c.result
+		end
+		local result = not SteppedDown(footPos, footZ)
+		leg.dropOffCache = { x = origin.x, y = origin.y, z = origin.z, fx = footPos.x, fy = footPos.y, fz = footZ, result = result }
+		return result
+	end
 	local feet = {}
 	local skipAnimSampling = procBlend >= 0.999 and proc.left and proc.right
 	for _, side in ipairs(SIDES) do
@@ -227,11 +294,16 @@ function Controller.Calculate(ply, sk, bones, P)
 		if not skipAnimSampling then
 			local samples = RT.Ground.SampleFoot(F, bodyFwd, traceStartZ, groundDist, side == "left", scale, sole, maxSurfaceSpeed)
 			local contact = RT.Ground.ResolveContact(samples, F)
+			local depth = origin.z - contact.highestZ
+			if contact.hasHit and onGround and depth > stepSize and IsDropOff(leg, F, contact.highestZ) then
+				contact.hasHit = false
+				contact.dropOff = depth
+			end
 			foot.contact = contact
 
 			local groundZ = P.anti_clip and contact.highestZ or contact.position.z
 			if leg.hadContact and not contact.hasHit and onGround then
-				Event(side, "contact_lost", { foot = F, samples = contact.hitCount })
+				Event(side, "contact_lost", { foot = F, samples = contact.hitCount, drop_off = contact.dropOff })
 			end
 			leg.hadContact = contact.hasHit
 			local lockZ = State.UpdateFootLock(leg, {

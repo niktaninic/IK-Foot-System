@@ -44,11 +44,20 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
               "SPEED=90; DIR=-1; STOPAT=1.5", "SPEED=90; TELEPORT_AT=1.0", "SPEED=90; LOWFPS=true",
               'SPEED=90; MODELSCALE=1.5; FOLLOWER_KIND="body"', 'SPEED=90; FOLLOWER_KIND="calf"',
               "SPEED=90; EXPECTED_REST=3", 'SPEED=90; WORLD="flat"; REST_DIP=true; EXPECTED_REST=3',
-              'SPEED=90; WORLD="flat"; REST_DIP=true', 'SPEED=0; WORLD="flat"; REST_DIP=true; EXPECTED_REST=3'):
+              'SPEED=90; WORLD="flat"; REST_DIP=true', 'SPEED=0; WORLD="flat"; REST_DIP=true; EXPECTED_REST=3',
+              # an invisible player clip ramp over the stairs: feet must stand
+              # on the visible treads and the stepper must still see stairs
+              'SPEED=90; WORLD="clipstairs"',
+              # standing at a ledge with the feet over the drop: no crouch
+              'SPEED=90; WORLD="ledge"; STOPAT=0.78', 'SPEED=90; WORLD="ledge"; STOPAT=0.78; LEDGE_DROP=22',
+              # steep / tall stairs walked down without the stepper: never a drop-off
+              "SPEED=90; DIR=-1; NOSTEP=true; RISE=12; TREAD=10", "SPEED=400; DIR=-1; RISE=10",
+              # not drawn for 0.3 s mid stairs (first person, out of view)
+              "SPEED=90; HIDE_AT=1.0; HIDE_FOR=0.3"):
     print("---", setup)
     sys.stdout.flush()
     r = run("test_stairs.lua", setup).globals().RESULT
-    stairs = "WORLD" not in setup and "TELEPORT" not in setup
+    stairs = ("WORLD" not in setup or "clipstairs" in setup) and "TELEPORT" not in setup and "HIDE" not in setup
     expect(setup, "nan frames", r.nan == 0, r.nan)
     expect(setup, "restep loops", r.restepLoops == 0, r.restepLoops)
     expect(setup, "both feet swinging while idle", r.idleBothSwing == 0, r.idleBothSwing)
@@ -62,6 +71,16 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
         expect(setup, "same foot twice", r.sameFootTwice == 0, r.sameFootTwice)
     if "REST_DIP" in setup and ("EXPECTED_REST" in setup or "SPEED=0" in setup):
         expect(setup, "REST H kept through bad reads", r.minRest > 2.5, r.minRest)
+    if "clipstairs" in setup:
+        expect(setup, "stepper engaged under a clip ramp", r.stairFrames > 60, r.stairFrames)
+    if "ledge" in setup:
+        expect(setup, "body drop at a ledge", r.ledgeDrop < 2, r.ledgeDrop)
+        expect(setup, "foot reaching down a ledge", r.ledgeAnkleMin > 0, r.ledgeAnkleMin)
+    if "NOSTEP" in setup or "SPEED=400" in setup:
+        expect(setup, "stairs taken for a drop-off", r.dropOffFrames == 0, r.dropOffFrames)
+    if "HIDE_AT" in setup:
+        expect(setup, "body off after resuming", r.resumeDropErr is not None and r.resumeDropErr < 1, r.resumeDropErr)
+        expect(setup, "feet replanted after resuming", r.replants == 0, r.replants)
 
 # full pipeline on the fake engine, with and without pac (parts on our bones),
 # overlay paths enabled; dump and capture must be valid json

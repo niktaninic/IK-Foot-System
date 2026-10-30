@@ -43,6 +43,15 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
   the foot lock uses the same ground height as the unlocked path (no 2 unit pop when it engages);
   leg length is cached per model scale; NaN angles from bone matrices are rejected; frame time is no
   longer capped at 1/20 s.
+- Ground traces ignore player clip brushes (invisible ramps many maps put over stairs). The feet stood on
+  the ramp, up to a step above the treads, and the stair stepper never saw steps there.
+- A foot over a ledge or a gap no longer reaches for the ground below it. Ground more than a step below
+  the player only counts when it can be reached in walkable steps (stairs); otherwise the body crouched to
+  its limit (25 units at a 30 unit ledge in the test) with the leg still dangling.
+- After a pause in drawing the player (first person, out of view, IK switched off) the IK starts fresh
+  instead of resuming from the old locks and springs (the body was 10 units off after 0.3 s on stairs).
+- Settings received over the network are range-checked on every client and NaN falls back to the default;
+  presets can only set the addon's own cvars.
 
 ## Diagnostics
 

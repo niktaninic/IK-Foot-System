@@ -36,7 +36,11 @@ local function TraceFilter()
 	return filterList
 end
 
-local traceData = { mask = MASK_PLAYERSOLID }
+-- visible geometry only. MASK_PLAYERSOLID also hits player clip brushes,
+-- which many maps lay over stairs as an invisible ramp: the feet stood on
+-- that ramp, up to a whole step above the treads, and the stair scanner saw
+-- a smooth slope instead of steps
+local traceData = { mask = MASK_SOLID }
 local traceOut = {}
 
 local function TraceDown(startPos, length, useHull)

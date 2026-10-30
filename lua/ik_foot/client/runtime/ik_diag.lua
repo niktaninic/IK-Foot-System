@@ -196,6 +196,7 @@ local function ContactSample(c)
 	if not c then return nil end
 	return {
 		hit = c.hasHit, hits = c.hitCount, pos = V(c.position), highestZ = R(c.highestZ),
+		drop_off = R(c.dropOff), -- ground found, but down a ledge / gap: not used
 		normal = V(c.normal, 3), surface = c.surfaceType, stable = c.surfaceStable,
 	}
 end

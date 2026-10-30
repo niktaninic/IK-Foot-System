@@ -152,10 +152,20 @@ local function GetCurrentSettings()
 	return settings
 end
 
+-- only the addon's own cvars: a preset file is plain json in data/ and must
+-- not be able to set anything else
+local OWN_CVARS = {}
+for _, entry in ipairs(CONVARS) do OWN_CVARS[entry.cvar] = entry end
+
 local function ApplySettings(settings)
 	for name, value in pairs(settings) do
-		if GetConVar(name) then
-			RunConsoleCommand(name, tostring(value))
+		local entry = OWN_CVARS[name]
+		if entry and GetConVar(name) and (isnumber(value) or isbool(value) or isstring(value)) then
+			if entry.type == "bool" then
+				RunConsoleCommand(name, tobool(value) and "1" or "0")
+			else
+				RunConsoleCommand(name, tostring(IKFoot.Config.ClampNumber(entry, value)))
+			end
 		end
 	end
 end
