@@ -271,6 +271,7 @@ function Diag.BuildSample(ply, detail)
 		drop = {
 			applied = R(res.bodyDrop), desired = R(d.desiredDrop), reach = R(d.reachDrop),
 			limiter = d.dropLimiter, land_dip = R(d.landDip), origin_jump = R(d.originJump),
+			stair_crouch = R(d.stairCrouch), -- learned crouch below the stair line (stairs only)
 		},
 		rest = d.restInfo and {
 			value = R(d.restInfo.value), expected = R(d.restInfo.expected), sample = R(d.restInfo.sample),

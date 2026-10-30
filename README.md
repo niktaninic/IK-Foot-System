@@ -62,6 +62,13 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
 - When a supporting foot lifted off, its reach limit vanished within a frame or two and the body shot up
   (3 units in one frame walking up a ramp, 0.9 stepping onto a curb). The limit is now released over
   0.2 s (tightening still applies at once), for the animation's own feet; the stair stepper is unchanged.
+- Stairs: the body height now follows the staircase instead of the feet. The per-foot requirements change
+  in jumps whenever a foot lifts off or lands, so the body went down stairs in bursts and the landing foot
+  was left up to 2.6 units short of its tread. The scanned profile under the hips, averaged over one tread
+  depth, is a straight ramp through the tread centres; the body rides it, aimed ahead by the walking speed,
+  crouched as much as the feet turned out to need (learned within a step or two). The foot requirements
+  remain a floor. Going down (test): landing foot short 1.9 -> 0 units, body jerk 2.7 -> 1.8 (walk) and
+  6.7 -> 1.9 (run). `ik_foot_dump` shows the learned `stair_crouch`; the drop limiter reads `stair_line`.
 
 ## Diagnostics
 

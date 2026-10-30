@@ -323,7 +323,29 @@ function Ground.ScanStairs(origin, dir, scale, minStep, maxStep, soleOffset)
 		ascending = upCount >= downCount,
 		edges = edges,
 		samples = heights,
+		step = stepLen,
 	}
+end
+
+-- mean ground height of the scanned profile between along-track coordinates
+-- a and b. every sample stands for the stretch around it, so the result
+-- changes continuously as the window slides. over one tread depth this turns
+-- a staircase into a straight ramp through the tread centres (and keeps a
+-- landing flat). nil when less than half the window was scanned
+function Ground.ProfileAverage(scan, a, b)
+	local half = (scan.step or 2) * 0.5
+	local sum, covered = 0, 0
+	for _, h in ipairs(scan.samples) do
+		if h.z then
+			local overlap = math.min(b, h.s + half) - math.max(a, h.s - half)
+			if overlap > 0 then
+				sum = sum + overlap * h.z
+				covered = covered + overlap
+			end
+		end
+	end
+	if covered < (b - a) * 0.5 then return nil end
+	return sum / covered
 end
 
 -- along-track coordinate of a world position in a scan

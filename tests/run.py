@@ -54,7 +54,9 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
               # steep / tall stairs walked down without the stepper: never a drop-off
               "SPEED=90; DIR=-1; NOSTEP=true; RISE=12; TREAD=10", "SPEED=400; DIR=-1; RISE=10",
               # not drawn for 0.3 s mid stairs (first person, out of view)
-              "SPEED=90; HIDE_AT=1.0; HIDE_FOR=0.3"):
+              "SPEED=90; HIDE_AT=1.0; HIDE_FOR=0.3",
+              # going down: slower walk, taller steps
+              "SPEED=60; DIR=-1", "SPEED=90; DIR=-1; RISE=10"):
     print("---", setup)
     sys.stdout.flush()
     r = run("test_stairs.lua", setup).globals().RESULT
@@ -79,6 +81,16 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
     if setup == 'SPEED=90; WORLD="ramp"':
         # the rear foot lifting off used to let the body shoot up 3 units in a frame
         expect(setup, "body jump walking up a slope", r.maxDropJump < 2, r.maxDropJump)
+    # going down, the body follows the staircase instead of the feet landing
+    # one by one: it used to sink in bursts and leave the landing foot short
+    # (previous build: float 1.7-2.6, jerk 2.6 / 2.7 / 4.0 / 6.7). the first
+    # step off the top landing still has to learn the crouch
+    down_jerk = {"SPEED=60; DIR=-1": 2.2, "SPEED=90; DIR=-1": 2.2, "SPEED=90; DIR=-1; RISE=10": 3.2, "SPEED=200; DIR=-1": 3.0}
+    if setup in down_jerk:
+        expect(setup, "planted foot short of the tread going down", r.float < 0.6, r.float)
+        expect(setup, "body jerk going down", r.maxBodyAccel < down_jerk[setup], r.maxBodyAccel)
+    if setup in ("SPEED=60", "SPEED=90"):
+        expect(setup, "body jerk going up", r.maxBodyAccel < 1.2, r.maxBodyAccel)
     if 'WORLD="curb"' in setup:
         expect(setup, "body jump stepping onto a curb", r.maxDropJump < 0.7, r.maxDropJump)
     if ('WORLD="flat"' in setup or 'WORLD="curb"' in setup) and "REST_DIP" not in setup:

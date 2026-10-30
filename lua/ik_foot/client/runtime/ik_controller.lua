@@ -14,6 +14,8 @@ local SIDES = { "left", "right" }
 -- the state refers to a pose and place that are gone
 local RESUME_GAP = 0.25
 local REACH_RELEASE_TIME = 0.2
+local STAIR_CROUCH_LEARN = 0.12
+local STAIR_CROUCH_FORGET = 1.5
 
 -- kept for api compatibility (old builds had a separate sole feedback loop,
 -- its job is now done by the rest height calibration in State)
@@ -439,6 +441,7 @@ function Controller.Calculate(ply, sk, bones, P)
 
 	local desired = 0
 	local dropLimiter = "in_air"
+	local stairLead = 0 -- rate the stair target moves at (drop units / s)
 	if onGround then
 		local diff = dHigh - dLow
 		local unevenFactor = math.Clamp(diff / (6 * scale), 0, 1)
@@ -448,6 +451,44 @@ function Controller.Calculate(ply, sk, bones, P)
 
 		desired = math.max(reachHeld, dLow) + extra
 		dropLimiter = reachHeld >= dLow and (reachHeld > reachDrop + 0.1 and "reach_release" or "reach") or "lowest_foot"
+
+		-- stairs: the body follows the staircase itself, not the feet. the
+		-- requirements above change in jumps whenever a foot lifts off or
+		-- lands, so the body went up and down stairs in bursts (3 units in a
+		-- frame walking down, 7 running). the profile under the hips averaged
+		-- over one tread depth is a straight ramp through the tread centres;
+		-- the body rides that ramp, crouched as far as the feet turned out to
+		-- need (learned quickly, forgotten slowly, so after a step or two the
+		-- reach limit stops kicking in). the foot requirements stay a floor
+		if procBlend > 0 and scan and scan.samples then
+			local depth = scan.depth > 0 and scan.depth or 12 * scale
+			local half = depth * 0.5
+			local sBody = RT.Ground.ScanCoord(scan, origin)
+			local lineZ = RT.Ground.ProfileAverage(scan, sBody - half, sBody + half)
+			if lineZ then
+				local lineDrop = origin.z - lineZ + extra
+				local need = math.max(reachDrop - lineDrop, 0)
+				local crouch = body.stairCrouch or need
+				crouch = crouch + (need - crouch) * ExpBlend(dt, need > crouch and STAIR_CROUCH_LEARN or STAIR_CROUCH_FORGET)
+				body.stairCrouch = crouch
+				local stairDesired = math.max(lineDrop + crouch, reachDrop)
+				desired = Lerp(procBlend, desired, stairDesired)
+				dropLimiter = stairDesired > reachDrop + 0.1 and "stair_line" or "reach"
+				-- the ramp moves under a walking body: aim ahead by what the
+				-- spring would lag behind it (slope * speed along the stairs,
+				-- minus whatever the origin itself climbs smoothly, e.g. on a
+				-- clip ramp; stair pops are absorbed separately)
+				local q = depth * 0.25
+				local zBack = RT.Ground.ProfileAverage(scan, sBody - half - q, sBody + half - q)
+				local zFront = RT.Ground.ProfileAverage(scan, sBody - half + q, sBody + half + q)
+				if zBack and zFront then
+					local along = vel.x * scan.dir.x + vel.y * scan.dir.y
+					stairLead = procBlend * ((originRise - jump) / dt - (zFront - zBack) / (2 * q) * along)
+				end
+			end
+		else
+			body.stairCrouch = nil
+		end
 		-- dont crouch so low that the higher foot's knee would have to fold
 		-- shut. when both cant be satisfied the supporting (lower) foot wins
 		local foldLimit = math.min(maxL, maxR)
@@ -486,7 +527,13 @@ function Controller.Calculate(ply, sk, bones, P)
 		-- clamp is only a safety net
 		body.drop = math.Clamp(body.drop + jump, desired - 2 * maxLag, desired + 2 * maxLag)
 	end
-	body.drop, body.vel = State.Spring(body.drop or desired, body.vel or 0, desired, bodySmooth, dt)
+	-- leading the moving stair target never aims above what the feet reach
+	local springTarget = desired
+	if stairLead ~= 0 then
+		springTarget = desired + stairLead * bodySmooth
+		if onGround then springTarget = math.max(springTarget, reachDrop) end
+	end
+	body.drop, body.vel = State.Spring(body.drop or desired, body.vel or 0, springTarget, bodySmooth, dt)
 	-- a lagging body must never leave a supporting foot hanging: if the lower
 	-- foot is out of reach, catch up much faster than the normal smoothing
 	if onGround and body.drop < reachDrop then
@@ -663,6 +710,7 @@ function Controller.Calculate(ply, sk, bones, P)
 			auxRoots = #bones.auxRoots,
 			followers = #(bones.followers or {}),
 			dropLimiter = dropLimiter,
+			stairCrouch = body.stairCrouch,
 			desiredDrop = desired,
 			reachDrop = reachDrop,
 			onGround = onGround,
