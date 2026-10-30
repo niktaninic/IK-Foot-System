@@ -69,6 +69,17 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
   crouched as much as the feet turned out to need (learned within a step or two). The foot requirements
   remain a floor. Going down (test): landing foot short 1.9 -> 0 units, body jerk 2.7 -> 1.8 (walk) and
   6.7 -> 1.9 (run). `ik_foot_dump` shows the learned `stair_crouch`; the drop limiter reads `stair_line`.
+- Stair entry: the stepper seeded feet on the floor before the stairs at the start of the scan window
+  (20 units behind the body, which then crouched on flat ground), let the animation's planted foot step
+  first while its lifted one waited (left 25 units behind at a run) and sent the first foot straight
+  onto the first step from far away. Feet now start where they stand, the animation's lifted foot steps
+  first, and the floor is walked up to the stairs. The stair crouch is a peak hold seeded from the
+  rise, so the first steps are covered too. Body jerk (test, previous -> now): walk down 2.7 -> 0.4,
+  run down 6.7 -> 1.1, walk up 0.63 -> 0.42, run up 4.3 -> 3.2; feet reach their treads in every case.
+- Cost: the stair scan (41 traces) ran every 0.12 s even standing still or on flat ground. It now
+  follows motion and, over smooth ground, only looks as often as it must to find stairs in time, ahead
+  of the player only. Hot trace code reuses its vectors. Test: traces per frame walking on flat ground
+  20 -> 14, standing 15 -> 10.5, on stairs 17 -> 13; Vector allocations per frame about -25 %.
 
 ## Diagnostics
 

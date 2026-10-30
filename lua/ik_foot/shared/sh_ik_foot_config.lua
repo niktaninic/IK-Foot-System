@@ -2,7 +2,7 @@ IKFoot = IKFoot or {}
 
 IKFoot.VERSION = "0.51"
 -- bump with every change that matters for a bug report: dumps record it
-IKFoot.BUILD = "0.51-diag.4"
+IKFoot.BUILD = "0.51-diag.5"
 
 -- bump whenever the meaning of a cvar changes. clients with an older stored
 -- version get the affected cvars reset once (see cl_ik_foot_context.lua)

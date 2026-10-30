@@ -66,8 +66,11 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
     expect(setup, "both feet swinging while idle", r.idleBothSwing == 0, r.idleBothSwing)
     expect(setup, "planted foot penetration", r.penetration < 0.5, r.penetration)
     expect(setup, "planted foot float", r.float < 3, r.float)
-    expect(setup, "follower position error", r.shoeErr < 0.01, r.shoeErr)
-    expect(setup, "follower angle error", r.shoeAngErr < 0.05, r.shoeAngErr)
+    # formula errors show as whole units; at a ~90 deg ik turn of the calf
+    # (stepper and animation out of phase) euler manipulation angles near
+    # pitch 90 lose ~0.07 deg, i.e. a few hundredths of a unit
+    expect(setup, "follower position error", r.shoeErr < 0.05, r.shoeErr)
+    expect(setup, "follower angle error", r.shoeAngErr < 0.15, r.shoeAngErr)
     if stairs and "SPEED=200" not in setup and "SPEED=400" not in setup:
         expect(setup, "treads between footfalls", r.maxSkip <= 1, r.maxSkip)
     if stairs and "STOPAT" not in setup and "TURN" not in setup:
@@ -83,14 +86,17 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
         expect(setup, "body jump walking up a slope", r.maxDropJump < 2, r.maxDropJump)
     # going down, the body follows the staircase instead of the feet landing
     # one by one: it used to sink in bursts and leave the landing foot short
-    # (previous build: float 1.7-2.6, jerk 2.6 / 2.7 / 4.0 / 6.7). the first
-    # step off the top landing still has to learn the crouch
-    down_jerk = {"SPEED=60; DIR=-1": 2.2, "SPEED=90; DIR=-1": 2.2, "SPEED=90; DIR=-1; RISE=10": 3.2, "SPEED=200; DIR=-1": 3.0}
+    # (0.51-diag.3: float 1.7-2.6, jerk 2.6 / 2.7 / 4.0 / 6.7)
+    down_jerk = {"SPEED=60; DIR=-1": 1.0, "SPEED=90; DIR=-1": 1.0, "SPEED=90; DIR=-1; RISE=10": 1.2, "SPEED=200; DIR=-1": 2.0}
     if setup in down_jerk:
-        expect(setup, "planted foot short of the tread going down", r.float < 0.6, r.float)
+        expect(setup, "planted foot short of the tread going down", r.float < 0.3, r.float)
         expect(setup, "body jerk going down", r.maxBodyAccel < down_jerk[setup], r.maxBodyAccel)
-    if setup in ("SPEED=60", "SPEED=90"):
-        expect(setup, "body jerk going up", r.maxBodyAccel < 1.2, r.maxBodyAccel)
+    # going up: entering from the floor used to seed both feet 20 units behind
+    # (crouch on flat ground) or leave one 25 units behind at a run
+    up_jerk = {"SPEED=60": 0.8, "SPEED=90": 0.8, "SPEED=200": 4.0}
+    if setup in up_jerk:
+        expect(setup, "body jerk going up", r.maxBodyAccel < up_jerk[setup], r.maxBodyAccel)
+        expect(setup, "planted foot short of the tread going up", r.float < 0.3, r.float)
     if 'WORLD="curb"' in setup:
         expect(setup, "body jump stepping onto a curb", r.maxDropJump < 0.7, r.maxDropJump)
     if ('WORLD="flat"' in setup or 'WORLD="curb"' in setup) and "REST_DIP" not in setup:

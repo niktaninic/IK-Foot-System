@@ -42,10 +42,15 @@ end
 -- a smooth slope instead of steps
 local traceData = { mask = MASK_SOLID }
 local traceOut = {}
+-- reused: the engine reads start / end when the trace runs, and this runs
+-- 10-60 times per player per frame (each new Vector is garbage to collect)
+local traceEnd = Vector()
+local traceStart = Vector()
 
 local function TraceDown(startPos, length, useHull)
 	traceData.start = startPos
-	traceData.endpos = startPos - Vector(0, 0, length)
+	traceEnd.x, traceEnd.y, traceEnd.z = startPos.x, startPos.y, startPos.z - length
+	traceData.endpos = traceEnd
 	traceData.filter = TraceFilter()
 	traceData.output = traceOut
 	if useHull then
@@ -121,20 +126,23 @@ function Ground.SampleFoot(footPos, forward, traceStartZ, groundDist, isLeft, sc
 	local right = Vector(fwd.y, -fwd.x, 0)
 
 	local sideSign = isLeft and -1 or 1
-	local base = Vector(footPos.x, footPos.y, traceStartZ)
 	local toeLen, heelLen, halfW = 5 * scale, 3 * scale, 2 * scale
-
+	-- along forward, along right
 	local offsets = {
-		center = vector_origin,
-		toe    = fwd * toeLen,
-		heel   = fwd * -heelLen,
-		outer  = right * (halfW * sideSign),
-		inner  = right * (-halfW * sideSign),
+		center = { 0, 0 },
+		toe    = { toeLen, 0 },
+		heel   = { -heelLen, 0 },
+		outer  = { 0, halfW * sideSign },
+		inner  = { 0, -halfW * sideSign },
 	}
 
 	local samples = {}
 	for _, name in ipairs(SAMPLE_NAMES) do
-		samples[name] = Ground.TraceSample(base + offsets[name], groundDist, soleOffset, maxSurfaceSpeed, name == "center")
+		local o = offsets[name]
+		traceStart.x = footPos.x + fwd.x * o[1] + right.x * o[2]
+		traceStart.y = footPos.y + fwd.y * o[1] + right.y * o[2]
+		traceStart.z = traceStartZ
+		samples[name] = Ground.TraceSample(traceStart, groundDist, soleOffset, maxSurfaceSpeed, name == "center")
 	end
 	samples._forward = fwd
 	samples._right = right
@@ -167,7 +175,7 @@ function Ground.ResolveContact(samples, fallbackPos, planeNormal)
 
 	local totalWeight, hitCount, stableWeight = 0, 0, 0
 	local zSum = 0
-	local normalSum = Vector()
+	local nx, ny, nz = 0, 0, 0
 	local surfaceWeights = {}
 	local bestEntity, bestEntityWeight = NULL, 0
 
@@ -177,7 +185,7 @@ function Ground.ResolveContact(samples, fallbackPos, planeNormal)
 			local w = SAMPLE_WEIGHTS[name] or 1
 			totalWeight = totalWeight + w
 			zSum = zSum + s.soleZ * w
-			normalSum:Add(s.normal * w)
+			nx, ny, nz = nx + s.normal.x * w, ny + s.normal.y * w, nz + s.normal.z * w
 			hitCount = hitCount + 1
 			surfaceWeights[s.surfaceType] = (surfaceWeights[s.surfaceType] or 0) + w
 			if s.surfaceStable then stableWeight = stableWeight + w end
@@ -192,8 +200,9 @@ function Ground.ResolveContact(samples, fallbackPos, planeNormal)
 	local normal = Vector(0, 0, 1)
 	if totalWeight > 0 then
 		pos.z = zSum / totalWeight
-		if normalSum:LengthSqr() > 0.001 then
-			normal = normalSum:GetNormalized()
+		local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+		if len > 0.03 then
+			normal = Vector(nx / len, ny / len, nz / len)
 		end
 	end
 
@@ -227,9 +236,11 @@ end
 -- flat treads separated by step edges. the stepper uses the treads to put
 -- each foot on a real step instead of wherever the walk animation lands.
 
-function Ground.ScanStairs(origin, dir, scale, minStep, maxStep, soleOffset)
+-- aheadOnly: skip the stretch behind the player (only the stepper needs it,
+-- for feet already on the stairs); for looking for stairs from flat ground
+function Ground.ScanStairs(origin, dir, scale, minStep, maxStep, soleOffset, aheadOnly)
 	local stepLen = 2 * scale
-	local sMin, sMax = -28 * scale, 52 * scale
+	local sMin, sMax = (aheadOnly and -4 or -28) * scale, 52 * scale
 	local topZ = origin.z + maxStep + 6 * scale
 	local length = maxStep * 3 + 12 * scale
 	local flatTol = math.max(0.6, 0.25 * scale)
@@ -238,7 +249,8 @@ function Ground.ScanStairs(origin, dir, scale, minStep, maxStep, soleOffset)
 	local n = 0
 	for s = sMin, sMax, stepLen do
 		n = n + 1
-		local tr = TraceDown(Vector(origin.x + dir.x * s, origin.y + dir.y * s, topZ), length, false)
+		traceStart.x, traceStart.y, traceStart.z = origin.x + dir.x * s, origin.y + dir.y * s, topZ
+		local tr = TraceDown(traceStart, length, false)
 		if tr.Hit and not tr.StartSolid and IsWalkable(tr.HitNormal) then
 			heights[n] = { s = s, z = tr.HitPos.z + soleOffset }
 		else

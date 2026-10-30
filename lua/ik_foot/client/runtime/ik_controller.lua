@@ -14,7 +14,6 @@ local SIDES = { "left", "right" }
 -- the state refers to a pose and place that are gone
 local RESUME_GAP = 0.25
 local REACH_RELEASE_TIME = 0.2
-local STAIR_CROUCH_LEARN = 0.12
 local STAIR_CROUCH_FORGET = 1.5
 
 -- kept for api compatibility (old builds had a separate sole feedback loop,
@@ -179,7 +178,7 @@ function Controller.Calculate(ply, sk, bones, P)
 	-- === stairs ===
 	local groundMoving = groundVel:Length() > maxSurfaceSpeed
 	local stairsAllowed = P.stair_stepper and onGround and not groundMoving and not crouch.inTransition
-	local scan = State.UpdateStairScan(state, now, origin, moveDir, scale, P, stairsAllowed)
+	local scan = State.UpdateStairScan(state, now, origin, moveDir, scale, P, stairsAllowed, vel2D)
 
 	-- ground height under a stepper placement and whether heel, centre and
 	-- toe (along the body's facing) rest on the same surface
@@ -230,6 +229,7 @@ function Controller.Calculate(ply, sk, bones, P)
 		maxCadence = P.stair_max_cadence,
 		lift = P.stair_step_lift * scale,
 		animFeet = { left = sk.left.footPos, right = sk.right.footPos },
+		animLifted = { left = plantW.left < 0.6, right = plantW.right < 0.6 },
 		lateral = lateral,
 		groundAt = GroundAt,
 		now = now,
@@ -458,7 +458,7 @@ function Controller.Calculate(ply, sk, bones, P)
 		-- frame walking down, 7 running). the profile under the hips averaged
 		-- over one tread depth is a straight ramp through the tread centres;
 		-- the body rides that ramp, crouched as far as the feet turned out to
-		-- need (learned quickly, forgotten slowly, so after a step or two the
+		-- need (taken at once, forgotten slowly, so after the first step the
 		-- reach limit stops kicking in). the foot requirements stay a floor
 		if procBlend > 0 and scan and scan.samples then
 			local depth = scan.depth > 0 and scan.depth or 12 * scale
@@ -468,8 +468,12 @@ function Controller.Calculate(ply, sk, bones, P)
 			if lineZ then
 				local lineDrop = origin.z - lineZ + extra
 				local need = math.max(reachDrop - lineDrop, 0)
-				local crouch = body.stairCrouch or need
-				crouch = crouch + (need - crouch) * ExpBlend(dt, need > crouch and STAIR_CROUCH_LEARN or STAIR_CROUCH_FORGET)
+				-- peak hold: going down the need shows for a frame or two as each
+				-- foot lands, a smoothed learner hardly noticed it. it starts from
+				-- what the geometry suggests (a foot half a step's rise below the
+				-- ramp) so the very first step is covered too
+				local crouch = body.stairCrouch or math.max(need, 0.5 * (treadsPerStep or 1) * (scan.rise or 0))
+				crouch = math.max(need, crouch + (need - crouch) * ExpBlend(dt, STAIR_CROUCH_FORGET))
 				body.stairCrouch = crouch
 				local stairDesired = math.max(lineDrop + crouch, reachDrop)
 				desired = Lerp(procBlend, desired, stairDesired)
