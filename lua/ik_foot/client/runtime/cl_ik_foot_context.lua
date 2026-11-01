@@ -17,7 +17,10 @@ RT.CVars = RT.CVars or {}
 for _, entry in ipairs(IKFoot.Config.entries) do
 	local default = entry.default
 	if entry.type == "bool" then default = default and 1 or 0 end
-	RT.CVars[entry.key] = CreateClientConVar(entry.cvar, tostring(default), true, true, entry.desc)
+	-- not userinfo: the values reach the server through IKFoot_ConfigUpdate,
+	-- as userinfo every change was sent a second time. min/max make the engine
+	-- clamp what is typed into the console
+	RT.CVars[entry.key] = CreateClientConVar(entry.cvar, tostring(default), true, false, entry.desc, entry.min, entry.max)
 end
 
 -- one-time migration. older versions stored model-specific values in cvars
@@ -455,7 +458,10 @@ local function ReadBindAnkles(model, footNames)
 end
 
 local function BuildBoneSet(ply, model)
-	local bones = { model = model, valid = false }
+	-- boneCount first: GetIKBones keeps a set while model and bone count match,
+	-- also a set for a model without usable legs. it was only filled in for
+	-- valid sets, so those were rebuilt (all bones searched by name) every frame
+	local bones = { model = model, valid = false, boneCount = ply:GetBoneCount() or 0 }
 
 	bones.lThigh = LookupFirst(ply, BONE_NAMES.lThigh)
 	bones.rThigh = LookupFirst(ply, BONE_NAMES.rThigh)
@@ -568,7 +574,7 @@ local function BuildBoneSet(ply, model)
 	bones.footCentre, bones.footCentreSource = footCentre, footCentreSource
 
 	local function Ancestry(bone)
-		-- returns the topmost ancestor and whether `target` is on the way
+		-- the bone and all its ancestors, topmost last
 		local chain = {}
 		local cur = bone
 		for _ = 1, 256 do

@@ -42,10 +42,13 @@ local function RunIK(ply, bones, params)
 end
 
 local function ProcessPlayer(ply)
-	-- detect death/respawn and hard reset to prevent bone distortion
+	-- respawned: remove our offsets through the blend layer and start the ik
+	-- state fresh. the old hard reset zeroed every leg bone outright (other
+	-- addons' manipulations too) and forgot the model, which re-ran the auto
+	-- configuration and its chat message on every respawn
 	local alive = ply:Alive()
 	if ply.IKWasAlive == false and alive then
-		RT.Apply.HardResetPlayer(ply)
+		RT.Apply.ResetPlayer(ply)
 		ply.IKWasAlive = alive
 		return
 	end

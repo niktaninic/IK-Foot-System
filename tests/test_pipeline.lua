@@ -340,6 +340,24 @@ print(string.format("with a foreign thigh rotation: engine vs solver ankle %.4f 
 check("composition exact with foreign rotation", maxAnkleErr < 0.01, maxAnkleErr)
 cvars.ik_foot_debug = DEBUG_LEVEL or "0"
 
+-- dying and respawning: our offsets go, another addon's rotation on the thigh
+-- (still there from above) stays, and the model is not taken for a new one
+-- (the old hard reset zeroed every leg bone and re-ran the auto config)
+local alive = true
+function ply:Alive() return alive end
+alive = false
+Frame()
+alive = true
+Frame()
+if not WITH_PAC then
+  local thigh = ply.manipAng[IDX[VB .. "L_Thigh"]] or Angle()
+  check("respawn keeps another addon's bone rotation", math.abs(thigh.p - 25) < 0.01 and math.abs(thigh.y - 30) < 0.01 and math.abs(thigh.r + 20) < 0.01,
+    string.format("%.2f %.2f %.2f", thigh.p, thigh.y, thigh.r))
+end
+check("respawn keeps the known model", ply.IKLastKnownModel ~= nil)
+for _ = 1, 5 do Frame() end
+check("ik back after respawn", ply.IKActive and ply.IKResultFrame == frame)
+
 -- commands: report, dump, capture
 commands["ik_foot_diag"]()
 FILES = {}

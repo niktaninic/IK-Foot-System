@@ -204,6 +204,19 @@ do
   check("rejected", not b.valid)
 end
 
+-- a model without usable legs is analysed once, not every frame
+do
+  local ply = makeModel({ bones = { { "root", -1 }, { "spine", 0 }, { "head", 1 } }, mesh = {} })
+  local lookups = 0
+  local lookup = ply.LookupBone
+  function ply:LookupBone(n) lookups = lookups + 1; return lookup(self, n) end
+  local b1 = RT.GetIKBones(ply)
+  local before = lookups
+  local b2 = RT.GetIKBones(ply)
+  check("model without legs: invalid", not b1.valid)
+  check("model without legs: bone set kept between frames", b1 == b2 and lookups == before, lookups - before)
+end
+
 -- the bind pose reader (expected REST H) must never leak its hidden model,
 -- also when the engine errors half way
 do

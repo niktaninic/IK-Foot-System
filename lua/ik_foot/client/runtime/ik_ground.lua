@@ -175,7 +175,7 @@ function Ground.ResolveContact(samples, fallbackPos, planeNormal)
 
 	local totalWeight, hitCount, stableWeight = 0, 0, 0
 	local zSum = 0
-	local nx, ny, nz = 0, 0, 0
+	local sumX, sumY, sumZ = 0, 0, 0 -- weighted normals
 	local surfaceWeights = {}
 	local bestEntity, bestEntityWeight = NULL, 0
 
@@ -185,7 +185,7 @@ function Ground.ResolveContact(samples, fallbackPos, planeNormal)
 			local w = SAMPLE_WEIGHTS[name] or 1
 			totalWeight = totalWeight + w
 			zSum = zSum + s.soleZ * w
-			nx, ny, nz = nx + s.normal.x * w, ny + s.normal.y * w, nz + s.normal.z * w
+			sumX, sumY, sumZ = sumX + s.normal.x * w, sumY + s.normal.y * w, sumZ + s.normal.z * w
 			hitCount = hitCount + 1
 			surfaceWeights[s.surfaceType] = (surfaceWeights[s.surfaceType] or 0) + w
 			if s.surfaceStable then stableWeight = stableWeight + w end
@@ -200,9 +200,9 @@ function Ground.ResolveContact(samples, fallbackPos, planeNormal)
 	local normal = Vector(0, 0, 1)
 	if totalWeight > 0 then
 		pos.z = zSum / totalWeight
-		local len = math.sqrt(nx * nx + ny * ny + nz * nz)
+		local len = math.sqrt(sumX * sumX + sumY * sumY + sumZ * sumZ)
 		if len > 0.03 then
-			normal = Vector(nx / len, ny / len, nz / len)
+			normal = Vector(sumX / len, sumY / len, sumZ / len)
 		end
 	end
 
