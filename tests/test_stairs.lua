@@ -78,7 +78,7 @@ if NOSTEP then P.stair_stepper = false end
 local DIR = DIR or 1
 local ply = { valid = true, pos = Vector(DIR > 0 and -60 or 220, 0, 0) }
 function ply:GetPos() return Vector(self.pos) end
-function ply:GetVelocity() return Vector(CURSPEED * DIR, 0, 0) end
+function ply:GetVelocity() return Vector(CURSPEED * DIR, CURDRIFT or 0, 0) end
 function ply:OnGround() return true end
 function ply:WaterLevel() return 0 end
 function ply:Crouching() return false end
@@ -171,6 +171,7 @@ ledgeDrop, ledgeAnkleMin = -math.huge, math.huge
 maxContactDepth, dropOffFrames = -math.huge, 0
 plantedMin, plantedMax = math.huge, -math.huge
 maxBodyAccel, lastBodyV = 0, nil
+maxRequested, maxLateral = 0, 0
 for i = 1, 60 * 5 do
   now = now + dt; frame = frame + 1
   -- source movement: origin snaps to the highest ground under the 32x32 hull
@@ -178,6 +179,9 @@ for i = 1, 60 * 5 do
   if TURN and STOPAT and now > STOPAT then facingYaw = facingYaw + 90 * dt end
   if TELEPORT_AT and not TELEPORTED and now > TELEPORT_AT then ply.pos.x = ply.pos.x + 300; TELEPORTED = true end
   ply.pos.x = ply.pos.x + CURSPEED * dt * DIR
+  -- sideways drift slower than the standing threshold (pushed, sliding)
+  CURDRIFT = (DRIFT and STOPAT and now > STOPAT) and DRIFT or 0
+  ply.pos.y = ply.pos.y + CURDRIFT * dt
   -- the hull rests on the highest solid under it, player clips included
   ply.pos.z = MaxOf(Phys, ply.pos.x - 16, ply.pos.x + 16)
   if CURSPEED > 0 then phase = phase + dt * CURSPEED / STRIDE * math.pi else phase = math.floor(phase / math.pi + 0.5) * math.pi + math.pi * 0.5 end
@@ -228,6 +232,14 @@ for i = 1, 60 * 5 do
         local h = leg.ankle.z - H(leg.ankle.x) - res.debug.restHeight
         plantedMin, plantedMax = math.min(plantedMin, h), math.max(plantedMax, h)
       end
+    end
+  end
+  for _, side in ipairs({"left", "right"}) do
+    local leg = res[side]
+    if leg.reach and leg.reach.requested then maxRequested = math.max(maxRequested, leg.reach.requested) end
+    if leg.procPhase == "planted" and leg.ankle then
+      local dy = leg.ankle.y - ply.pos.y
+      maxLateral = math.max(maxLateral, math.abs(dy))
     end
   end
   if WORLD == "ledge" and STOPAT and now > STOPAT + 0.5 then
@@ -354,7 +366,8 @@ RESULT = { nan = nanFrames, restepLoops = restepLoops, idleBothSwing = idleBothS
   minRest = minRest, maxRest = maxRest, stairFrames = stairFrames, replants = replants,
   resumeDropErr = resumeDropErr, ledgeDrop = ledgeDrop, ledgeAnkleMin = ledgeAnkleMin, maxDropJump = maxDropJump,
   maxContactDepth = maxContactDepth, dropOffFrames = dropOffFrames, plantedMin = plantedMin, plantedMax = plantedMax,
-  maxBodyAccel = maxBodyAccel }
+  maxBodyAccel = maxBodyAccel, maxRequested = maxRequested, maxLateral = maxLateral }
+print(string.format("worst requested hip-ankle distance %.1f (leg %.1f), planted foot up to %.1f units sideways", maxRequested, 39, maxLateral))
 print(string.format("planted feet (animation mode): ankle above the ground under it minus REST H: %.2f .. %.2f", plantedMin, plantedMax))
 print(string.format("deepest foot contact below the origin %.1f, frames with the foot over a drop-off %d", maxContactDepth, dropOffFrames))
 if HIDE_AT then print(string.format("resumed after %.2f s hidden: |drop - desired| on the first frame %.2f, replants %d", HIDE_FOR or 0.5, resumeDropErr or -1, replants)) end

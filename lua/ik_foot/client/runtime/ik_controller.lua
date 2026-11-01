@@ -586,6 +586,7 @@ function Controller.Calculate(ply, sk, bones, P)
 			stepReason = stepFoot and stepFoot.lastReason,
 			stepBlocked = stepFoot and stepFoot.blocked,
 			stepStarts = stepFoot and stepFoot.starts,
+			stepIdleStarts = stepFoot and stepFoot.idleStarts,
 			footWorld = solved and footAng or skLeg.footAng,
 			footFinal = solved and solved.ankle or (skLeg.footPos - Vector(0, 0, drop)),
 			thigh = solved and solved.thigh or Angle(),

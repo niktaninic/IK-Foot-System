@@ -50,6 +50,19 @@ local function Runtime() return IKFoot.Runtime end
 -- invisible container (Paint = nil would fall back to the skin's background)
 local function NoPaint() end
 
+-- docking with the numbers remembered: card heights are added up from them
+-- instead of being read back from the engine
+local function Margin(p, l, t, r, b)
+	p:DockMargin(l, t, r, b)
+	p.ikMargin = { l, t, r, b }
+end
+
+-- the panel or anything inside it is under the mouse
+local function HoveredWithin(p)
+	local hovered = vgui.GetHoveredPanel()
+	return IsValid(hovered) and (hovered == p or hovered:HasParent(p))
+end
+
 local function LerpColor(t, a, b)
 	return Color(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, a.a + (b.a - a.a) * t)
 end
@@ -444,11 +457,11 @@ local function SettingRow(parent, spec)
 	local isChoice = spec.key == "debug"
 	local row = vgui.Create("DPanel", parent)
 	row:Dock(TOP)
-	row:DockMargin(0, 0, 0, 6)
+	Margin(row, 0, 0, 0, 6)
 	row:SetTall((isBool or isChoice) and 64 or 92)
 	row:SetTooltip(Tooltip(spec))
 	row.Paint = function(self, w, h)
-		draw.RoundedBox(8, 0, 0, w, h, (self:IsHovered() or self:IsChildHovered()) and C.rowHover or C.row)
+		draw.RoundedBox(8, 0, 0, w, h, HoveredWithin(self) and C.rowHover or C.row)
 		if not IsDefault(spec) then draw.RoundedBox(2, 0, 12, 3, h - 24, C.accent) end
 	end
 
@@ -521,8 +534,9 @@ end
 local function Card(parent, title, subtitle)
 	local card = vgui.Create("DPanel", parent)
 	card:Dock(TOP)
-	card:DockMargin(0, 0, 0, 12)
-	card:DockPadding(14, title and (subtitle and 58 or 40) or 14, 14, 8)
+	Margin(card, 0, 0, 0, 12)
+	card.ikPad = { 14, title and (subtitle and 58 or 40) or 14, 14, 8 }
+	card:DockPadding(card.ikPad[1], card.ikPad[2], card.ikPad[3], card.ikPad[4])
 	card.Paint = function(_, w, h)
 		draw.RoundedBox(10, 0, 0, w, h, C.card)
 		if title then draw.SimpleText(title, "IKFoot.H2", 14, 12, C.text) end
@@ -533,11 +547,11 @@ end
 
 -- a card's height from its docked children (they all have fixed heights)
 local function FitCard(card)
-	local _, top, _, bottom = card:GetDockPadding()
-	local h = top + bottom
+	local pad = card.ikPad or { 0, 0, 0, 0 }
+	local h = pad[2] + pad[4]
 	for _, child in ipairs(card:GetChildren()) do
-		local _, mt, _, mb = child:GetDockMargin()
-		h = h + child:GetTall() + mt + mb
+		local m = child.ikMargin or { 0, 0, 0, 0 }
+		h = h + child:GetTall() + m[2] + m[4]
 	end
 	card:SetTall(h)
 	return card
@@ -578,7 +592,7 @@ end
 local function ButtonGrid(parent, columns, buttons)
 	local grid = vgui.Create("DPanel", parent)
 	grid:Dock(TOP)
-	grid:DockMargin(0, 4, 0, 4)
+	Margin(grid, 0, 4, 0, 4)
 	local rows = math.ceil(#buttons / columns)
 	grid:SetTall(rows * 40 - 6)
 	grid.Paint = NoPaint
@@ -743,10 +757,10 @@ function Build.presets(scroll)
 	for _, presetName in ipairs(names) do
 		local row = vgui.Create("DPanel", listCard)
 		row:Dock(TOP)
-		row:DockMargin(0, 0, 0, 6)
+		Margin(row, 0, 0, 0, 6)
 		row:SetTall(42)
 		row.Paint = function(self, w, h)
-			draw.RoundedBox(8, 0, 0, w, h, (self:IsHovered() or self:IsChildHovered()) and C.rowHover or C.row)
+			draw.RoundedBox(8, 0, 0, w, h, HoveredWithin(self) and C.rowHover or C.row)
 			draw.SimpleText(presetName, "IKFoot.Body", 14, h * 0.5, C.text, TEXT_ALIGN_LEFT, TEXT_ALIGN_CENTER)
 		end
 		local del = FlatButton(row, "Delete", C.bad, function()
@@ -1012,15 +1026,31 @@ local function CreateGUI()
 		lastPage = id
 		scroll:Clear()
 		local query = string.Trim(search:GetValue() or "")
-		if query ~= "" then
-			Build.search(scroll, nil, query)
-		else
-			for _, page in ipairs(PAGES) do
-				if page.id == id then
-					local builder = Build[id] or CategoryPage
-					if builder == CategoryPage then CategoryPage(page, scroll) else builder(scroll, page) end
+		local ok, err = xpcall(function()
+			if query ~= "" then
+				Build.search(scroll, nil, query)
+			else
+				for _, page in ipairs(PAGES) do
+					if page.id == id then
+						local builder = Build[id] or CategoryPage
+						if builder == CategoryPage then CategoryPage(page, scroll) else builder(scroll, page) end
+					end
 				end
 			end
+		end, debug.traceback)
+		if not ok then
+			-- a broken page says so (and how to report it) instead of staying blank
+			ErrorNoHalt("[IK Foot] menu page '" .. tostring(id) .. "' failed: " .. tostring(err) .. "\n")
+			scroll:Clear()
+			local msg = vgui.Create("DLabel", scroll)
+			msg:Dock(TOP)
+			msg:SetTall(260)
+			msg:SetWrap(true)
+			msg:SetContentAlignment(7)
+			msg:SetFont("IKFoot.Small")
+			msg:SetTextColor(C.bad)
+			msg:SetText("This page could not be built. Please send this text (also in the console) to the addon author:\n\n"
+				.. string.sub(tostring(err), 1, 900))
 		end
 		scroll:InvalidateLayout()
 	end

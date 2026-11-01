@@ -382,6 +382,28 @@ LocalPlayer = realLocalPlayer
 for _ = 1, 10 do Frame() end
 check("ik back for the local player", ply.IKActive and ply.IKResultFrame == frame)
 
+-- stopping on the stairs after a walk: the last steps of the walk are not a
+-- re-step loop (the old check fired for two seconds after every stop)
+ply.pos.x = -40 -- back in front of the stairs (a teleport: the ik starts fresh)
+for _ = 1, 50 do Frame() end -- and up onto them
+check("walking on the stairs before stopping", SPEED == 0 or (RT.State.Get(ply).stepper.blend or 0) > 0.9, RT.State.Get(ply).stepper.blend)
+local restepsBefore = countEvents("restep_loop")
+local walkSpeed = SPEED
+SPEED = 0
+for _ = 1, 150 do Frame() end
+check("no re-step loop after stopping", countEvents("restep_loop") == restepsBefore, countEvents("restep_loop") - restepsBefore)
+SPEED = walkSpeed
+for _ = 1, 30 do Frame() end
+
+-- a serious event keeps the history around it for later dumps
+RT.Diag.lastIncident = nil
+RT.Diag.Event(ply, "replant", "right", { dist = 40, reach = 33 })
+for _ = 1, 45 do Frame() end
+local incident = RT.Diag.incidents[#RT.Diag.incidents]
+check("incident recorded", incident and incident.kind == "replant", incident and incident.kind)
+check("incident keeps the history before it", incident and #incident.before > 10, incident and #incident.before)
+check("incident keeps the history after it", incident and #incident.after > 5, incident and #incident.after)
+
 -- commands: report, dump, capture
 commands["ik_foot_diag"]()
 FILES = {}

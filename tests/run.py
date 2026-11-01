@@ -59,7 +59,10 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
               # not drawn for 0.3 s mid stairs (first person, out of view)
               "SPEED=90; HIDE_AT=1.0; HIDE_FOR=0.3",
               # going down: slower walk, taller steps
-              "SPEED=60; DIR=-1", "SPEED=90; DIR=-1; RISE=10"):
+              "SPEED=60; DIR=-1", "SPEED=90; DIR=-1; RISE=10",
+              # pushed sideways while standing on the stairs, slower than the
+              # standing threshold: the feet follow with steps, never dragged
+              "SPEED=90; STOPAT=1.37; DRIFT=4", "SPEED=90; STOPAT=1.37; DRIFT=-3; DIR=-1"):
     print("---", setup)
     sys.stdout.flush()
     r = run("test_stairs.lua", setup).globals().RESULT
@@ -111,6 +114,9 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
         expect(setup, "foot reaching down a ledge", r.ledgeAnkleMin > 0, r.ledgeAnkleMin)
     if "NOSTEP" in setup or "SPEED=400" in setup:
         expect(setup, "stairs taken for a drop-off", r.dropOffFrames == 0, r.dropOffFrames)
+    if "DRIFT" in setup:
+        expect(setup, "planted foot left behind sideways", r.maxLateral < 14, r.maxLateral)
+        expect(setup, "feet teleported while drifting", r.replants == 0, r.replants)
     if "HIDE_AT" in setup:
         expect(setup, "body off after resuming", r.resumeDropErr is not None and r.resumeDropErr < 1, r.resumeDropErr)
         expect(setup, "feet replanted after resuming", r.replants == 0, r.replants)
@@ -140,6 +146,7 @@ for setup in ("", "WITH_PAC=true", 'WITH_PAC=true; PAC_THIGH_PART={p=15,y=10,r=0
                    if k not in leg]
         expect(setup, "dump %s leg fields" % side, not missing, missing)
     expect(setup, "dump rest / drop", "rest" in dump["current"] and "drop" in dump["current"], list(dump["current"]))
+    expect(setup, "dump keeps incidents", isinstance(dump.get("incidents"), list) and len(dump["incidents"]) > 0, type(dump.get("incidents")))
     expect(setup, "pipeline checks", lua.globals().PIPELINE_FAILS == 0, lua.globals().PIPELINE_FAILS)
 
 print()

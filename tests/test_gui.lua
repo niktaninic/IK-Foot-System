@@ -71,7 +71,10 @@ local function cvarObj(name)
     GetInt = function() return math.floor(tonumber(cvars[name]) or 0) end,
   }
 end
-function GetConVar(name) return cvars[name] ~= nil and cvarObj(name) or nil end
+function GetConVar(name)
+  if FAIL_CVAR == name then error("simulated engine error for " .. name) end
+  return cvars[name] ~= nil and cvarObj(name) or nil
+end
 function RunConsoleCommand(name, ...)
   local args = { ... }
   COMMANDS[#COMMANDS + 1] = name .. (#args > 0 and (" " .. table.concat(args, " ")) or "")
@@ -99,11 +102,11 @@ include = function() end
 -- ---------------------------------------------------------------- derma
 local KNOWN = {}
 for _, m in ipairs({ "SetSize", "SetPos", "GetWide", "GetTall", "SetTall", "SetWide", "Dock", "DockMargin", "DockPadding",
-  "GetDockPadding", "GetDockMargin", "Center", "SetTitle", "ShowCloseButton", "SetDraggable", "SetSizable", "MakePopup",
+  "Center", "SetTitle", "ShowCloseButton", "SetDraggable", "SetSizable", "MakePopup",
   "Remove", "Close", "SetText", "SetFont", "SetTextColor", "SetWrap", "SetContentAlignment", "SetTooltip", "SetVisible",
   "IsVisible", "IsHovered", "IsChildHovered", "IsDown", "GetDisabled", "SetMin", "SetMax", "SetDecimals", "SetConVar",
   "SetValue", "GetValue", "SetUpdateOnType", "HasFocus", "DrawTextEntryText", "Clear", "InvalidateLayout", "GetVBar",
-  "GetChildren", "GetSlideX", "IsValid", "SetMouseInputEnabled", "GetPos", "MouseCapture", "KillFocus" }) do KNOWN[m] = true end
+  "GetChildren", "GetSlideX", "IsValid", "SetMouseInputEnabled", "GetPos", "MouseCapture", "KillFocus", "HasParent" }) do KNOWN[m] = true end
 local UNKNOWN = {}
 local ALL = {}
 
@@ -126,8 +129,6 @@ function Panel:SetWide(w) self.w = w end
 function Panel:Dock(d) self.dock = d end
 function Panel:DockMargin(l, t, r, b) self.margin = { l, t, r, b } end
 function Panel:DockPadding(l, t, r, b) self.padding = { l, t, r, b } end
-function Panel:GetDockPadding() local p = self.padding or { 0, 0, 0, 0 } return p[1], p[2], p[3], p[4] end
-function Panel:GetDockMargin() local p = self.margin or { 0, 0, 0, 0 } return p[1], p[2], p[3], p[4] end
 function Panel:Center() end
 function Panel:SetTitle() end
 function Panel:ShowCloseButton() end
@@ -151,7 +152,14 @@ function Panel:SetTooltip(t) check("SetTooltip string", type(t) == "string", deb
 function Panel:SetVisible(v) self.hidden = not v end
 function Panel:IsVisible() return not self.hidden end
 function Panel:IsHovered() return HOVER == true end
-function Panel:IsChildHovered() return false end
+function Panel:HasParent(p)
+  local cur = self.parent
+  while cur do
+    if cur == p then return true end
+    cur = cur.parent
+  end
+  return false
+end
 function Panel:IsDown() return false end
 function Panel:GetDisabled() return false end
 function Panel:SetMin(v) check("SetMin number", num(v)) end
@@ -203,7 +211,9 @@ local function NewPanel(class, parent)
   return p
 end
 function IsValid(p) return p ~= nil and p ~= false and (type(p) ~= "table" or not p.removed) end
-vgui = { Create = function(class, parent) return NewPanel(class, parent) end }
+vgui = { Create = function(class, parent) return NewPanel(class, parent) end,
+  GetHoveredPanel = function() return HOVERED end }
+function ErrorNoHalt(msg) print("ErrorNoHalt: " .. msg) end
 
 local FORM = {}
 spawnmenu = { AddToolMenuOption = function(tab, cat, class, name, cmd, config, fn) FORM.builder = fn end }
@@ -253,9 +263,11 @@ end
 local function Exercise()
   for pass = 1, 2 do
     HOVER = pass == 2
+    HOVERED = nil
     for _, p in ipairs(ALL) do
       if not p.removed then
         local w, h = p:GetWide(), p:GetTall()
+        if HOVER then HOVERED = p end
         for _, fn in ipairs({ "PerformLayout", "Think", "Paint" }) do
           local f = rawget(p, fn)
           if f then
@@ -412,6 +424,19 @@ if presetsNav then
     check("preset holds the value", saved and saved.mine and saved.mine.ik_foot_smoothing == 33)
   end
 end
+
+-- a page that fails to build shows the error instead of staying blank
+FAIL_CVAR = "ik_foot_max_distance"
+ok, err = pcall(navs[7].DoClick, navs[7])
+FAIL_CVAR = nil
+check("a failing page does not break the menu", ok, err)
+local shown
+for _, p in ipairs(ALL) do
+  if not p.removed and p.class == "DLabel" and type(p.text) == "string" and p.text:find("could not be built", 1, true) then shown = p.text end
+end
+check("a failing page shows the error", shown and shown:find("simulated engine error", 1, true), shown)
+navs[1]:DoClick()
+Exercise()
 
 -- spawn menu panel
 local form = setmetatable({}, { __index = function(_, k) return function() return NewPanel("DButton") end end })

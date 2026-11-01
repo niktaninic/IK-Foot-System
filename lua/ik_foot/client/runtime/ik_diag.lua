@@ -41,6 +41,17 @@ local cvPrint = CreateClientConVar("ik_foot_diag_print", "1", true, false, "Prin
 
 Diag.events = Diag.events or {}
 Diag.history = Diag.history or {}
+-- the history around serious events, kept for later dumps: the 10 s ring
+-- buffer only shows the last moments before the dump, usually calm ones
+Diag.incidents = Diag.incidents or {}
+local INCIDENT_SIZE = 4
+local INCIDENT_AFTER = 2   -- s of history recorded after the event
+local INCIDENT_GAP = 5     -- s between two incidents
+local function IsIncident(kind, values)
+	if kind == "solver_miss" then return (values and values.miss or 0) > 4 end
+	return kind == "replant" or kind == "restep_loop" or kind == "engine_mismatch" or kind == "follower_error"
+		or kind == "rest_jump" or kind == "nan" or kind == "process_error"
+end
 Diag.stats = Diag.stats or {}
 Diag.lastPrint = Diag.lastPrint or {}
 Diag.suppressed = Diag.suppressed or {}
@@ -159,6 +170,14 @@ function Diag.Event(ply, kind, side, values, key)
 		}
 		Diag.openEvents[key] = e
 		PushRing(Diag.events, e, EVENT_SIZE)
+		if IsIncident(kind, values) and now - (Diag.lastIncident or -math.huge) >= INCIDENT_GAP then
+			Diag.lastIncident = now
+			local before = {}
+			for i, s in ipairs(Diag.history) do before[i] = s end
+			local incident = { t = e.t, kind = kind, side = side, values = e.values, before = before, after = {} }
+			Diag.openIncident = { record = incident, untilT = now + INCIDENT_AFTER }
+			PushRing(Diag.incidents, incident, INCIDENT_SIZE)
+		end
 		if Diag.capture then
 			local ev = Diag.capture.events
 			if #ev < 2000 then ev[#ev + 1] = e end
@@ -353,8 +372,10 @@ function Diag.OnResult(ply, res)
 					})
 				end
 			end
-			-- the same foot starting steps over and over while standing
-			local starts = leg.stepStarts
+			-- the same foot starting steps over and over while standing. only
+			-- steps started while standing count: the last steps of a walk
+			-- used to set this off for two seconds after every stop
+			local starts = leg.stepIdleStarts
 			if starts and #starts >= 3 and (d.velocity2D or 0) < 10 then
 				local recent = 0
 				for _, t in ipairs(starts) do
@@ -436,7 +457,17 @@ function Diag.Readback(ply)
 	if Diag.pendingHistory then
 		Diag.pendingHistory = false
 		local s = Diag.BuildSample(ply, false)
-		if s then PushRing(Diag.history, s, HISTORY_SIZE) end
+		if s then
+			PushRing(Diag.history, s, HISTORY_SIZE)
+			local open = Diag.openIncident
+			if open then
+				if RealTime() <= open.untilT then
+					open.record.after[#open.record.after + 1] = s
+				else
+					Diag.openIncident = nil
+				end
+			end
+		end
 	end
 	if Diag.pendingCapture and Diag.capture then
 		Diag.pendingCapture = false
@@ -527,6 +558,7 @@ function Diag.Dump(ply)
 	data.fail_count = ply.IKFailCount or 0
 	data.current = Diag.BuildSample(ply, true)
 	data.history = Diag.history
+	data.incidents = Diag.incidents
 	data.events = Diag.events
 	data.stats = Plain(Diag.stats)
 	local name, size = WriteJSON("dump", data)
@@ -675,6 +707,11 @@ function Diag.Report(ply)
 	for i = #Diag.events, math.max(1, #Diag.events - 7), -1 do
 		local e = Diag.events[i]
 		recent[#recent + 1] = string.format("  %.2f%s %s %s %s", e.t, (e.count or 1) > 1 and string.format("-%.2f x%d", e.t_last, e.count) or "", e.kind, e.side or "", util.TableToJSON(e.values or {}) or "")
+	end
+	if #Diag.incidents > 0 then
+		local list = {}
+		for _, inc in ipairs(Diag.incidents) do list[#list + 1] = string.format("%.1f %s %s", inc.t, inc.kind, inc.side or "") end
+		Line(white, string.format("incidents with history (in ik_foot_dump): %s", table.concat(list, ", ")))
 	end
 	Line(head, string.format("last events (%d stored):", #Diag.events))
 	for _, l in ipairs(recent) do Line(grey, l) end

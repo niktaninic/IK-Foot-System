@@ -37,7 +37,8 @@ local function NewFoot()
 end
 
 local function NewStepperFoot()
-	return { plant = nil, swing = nil, starts = {}, lastReason = nil, blocked = nil }
+	-- idleStarts: steps started while (almost) standing, for the re-step loop check
+	return { plant = nil, swing = nil, starts = {}, idleStarts = {}, lastReason = nil, blocked = nil }
 end
 
 local function NewState()
@@ -328,10 +329,12 @@ function State.UpdateStairScan(runtimeState, now, origin, dir, scale, params, en
 	local aheadOnly = false
 	if scan then
 		local along = math.abs(RT.Ground.ScanCoord(scan, origin))
+		-- off the scanned line sideways: the profile was sampled somewhere else
+		local aside = math.abs((origin.x - scan.origin.x) * scan.dir.y - (origin.y - scan.origin.y) * scan.dir.x)
 		local turned = scan.dir.x * dir.x + scan.dir.y * dir.y < 0.96
 		local age = now - stairs.scanTime
 		if scan.edges > 0 or stairs.active then
-			needScan = turned or along > 6 * scale or (age >= SCAN_INTERVAL and along > 0.5 * scale)
+			needScan = turned or along > 6 * scale or aside > 6 * scale or (age >= SCAN_INTERVAL and along > 0.5 * scale)
 		else
 			-- stairs are recognised once their second edge is within 44 units:
 			-- rescanning every D units finds them >= 32 - D units ahead
@@ -365,7 +368,9 @@ end
 -- floor before the stairs the start of that long tread is just where the
 -- scan window begins: both feet were seeded 20 units behind the body and the
 -- body crouched 5 units on flat ground to keep them in reach
-local function PlacementOnTread(scan, tread, lateral, right, footLen, preferS)
+-- bodyAside: how far the body is off the scanned line sideways right now;
+-- placements are relative to the body, not to where the scan was taken
+local function PlacementOnTread(scan, tread, lateral, right, footLen, preferS, bodyAside)
 	local center = (tread.s0 + tread.s1) * 0.5
 	local width = tread.s1 - tread.s0
 	local s
@@ -384,6 +389,7 @@ local function PlacementOnTread(scan, tread, lateral, right, footLen, preferS)
 		end
 	end
 	local pos = scan.origin + scan.dir * s + right * lateral
+	if bodyAside then pos = pos + bodyAside end
 	pos.z = tread.z
 	return pos, s
 end
@@ -455,16 +461,33 @@ function State.UpdateStepper(runtimeState, data)
 	end
 
 	local sBody = RT.Ground.ScanCoord(scan, data.origin)
+	local bodyAside = data.origin - scan.origin - scan.dir * sBody
+	bodyAside.z = 0
 	local now = data.now or 0
 	local function NoteStart(f, reason)
 		f.lastReason = reason
 		f.blocked = nil
 		f.starts[#f.starts + 1] = now
 		while #f.starts > 6 do table.remove(f.starts, 1) end
+		if data.speed <= data.idleSpeed * 2 then
+			f.idleStarts = f.idleStarts or {}
+			f.idleStarts[#f.idleStarts + 1] = now
+			while #f.idleStarts > 6 do table.remove(f.idleStarts, 1) end
+		end
+	end
+	-- where a foot belongs right now: under the hips, at its own distance to
+	-- the side. both directions count: the gait and the settle step used to
+	-- look only along the stairs, so a player drifting sideways while
+	-- standing (pushed, sliding) dragged both feet along until they were
+	-- teleported (18 units off after 4 s at 4 units/s in the test)
+	local function OffIdeal(side, pos)
+		local ideal = data.origin + data.right * data.lateral[side]
+		local dx, dy = pos.x - ideal.x, pos.y - ideal.y
+		return math.sqrt(dx * dx + dy * dy)
 	end
 	local function Place(side, treadIndex, preferS)
 		local tread = scan.treads[math.Clamp(treadIndex, 1, #scan.treads)]
-		local pos, s = PlacementOnTread(scan, tread, data.lateral[side], data.right, footLen, preferS)
+		local pos, s = PlacementOnTread(scan, tread, data.lateral[side], data.right, footLen, preferS, bodyAside)
 		-- the traces right under the foot are the truth: the scan only samples
 		-- its centre line, and with the body turned the foot's lateral offset
 		-- and its own length can cross a tread edge (old code: kept the scan's
@@ -550,7 +573,9 @@ function State.UpdateStepper(runtimeState, data)
 		-- getting far behind, and must lift (both feet briefly in the air, a
 		-- hop) before it would fall out of reach and have to be teleported
 		local leadReady = not lead.swing or (lead.swing.t >= 0.65 and behind > reach * 0.55) or behind > reach * 0.8
-		local wantsStep = sBody >= sLead - 0.25 * strideAdvance or behind > reach * 0.7 or trail.stepNow
+		-- left far off to the side counts like far behind
+		local trailFar = behind > reach * 0.7 or (not trail.swing and OffIdeal(trailSide, trail.plant) > reach * 0.7)
+		local wantsStep = sBody >= sLead - 0.25 * strideAdvance or trailFar or trail.stepNow
 		-- a settle step started while standing should finish with the body
 		-- once the player walks off again
 		for _, f in pairs(stepper.feet) do
@@ -586,7 +611,7 @@ function State.UpdateStepper(runtimeState, data)
 				-- scan ran out: extrapolate one stride along the slope
 				local lastTread = scan.treads[#scan.treads]
 				sTo = sLead + strideAdvance
-				toPos = scan.origin + scan.dir * sTo + data.right * data.lateral[trailSide]
+				toPos = scan.origin + scan.dir * sTo + data.right * data.lateral[trailSide] + bodyAside
 				toPos.z = lastTread.z
 			end
 			-- the lead foot still stands on the floor (or a landing) and the
@@ -607,7 +632,7 @@ function State.UpdateStepper(runtimeState, data)
 			if sTo - sBody >= reach then
 				trail.blocked = "target_out_of_reach"
 			else
-				NoteStart(trail, behind > reach * 0.7 and "gait_far_behind" or (lead.swing and "gait_overlap" or "gait"))
+				NoteStart(trail, trailFar and "gait_far_behind" or (lead.swing and "gait_overlap" or "gait"))
 				trail.swing = {
 					from = trail.plant,
 					to = toPos,
@@ -631,15 +656,16 @@ function State.UpdateStepper(runtimeState, data)
 		local settleDist = data.legLength * 0.22
 		local worstSide, worstDist = nil, settleDist
 		for _, side in ipairs({ "left", "right" }) do
-			local d = math.abs(FootCoord(stepper.feet[side]) - sBody)
+			local d = OffIdeal(side, stepper.feet[side].plant)
 			if d > worstDist then worstSide, worstDist = side, d end
 		end
 		if worstSide then
 			local f = stepper.feet[worstSide]
-			local toPos, sTo = Place(worstSide, RT.Ground.TreadIndexAt(scan, sBody) or 1, sBody)
-			-- only if it is a real improvement (long landings place the foot
-			-- near the edge, which must not cause an endless re-step)
-			if math.abs(sTo - sBody) >= worstDist - 1 then
+			local toPos = Place(worstSide, RT.Ground.TreadIndexAt(scan, sBody) or 1, sBody)
+			-- only if it is a real improvement (a foot kept off a tread edge
+			-- can not get right under the hips, that must not cause an endless
+			-- re-step)
+			if OffIdeal(worstSide, toPos) >= worstDist - 1 then
 				f.blocked = "settle_no_better_spot"
 			else
 				NoteStart(f, "settle")

@@ -76,6 +76,14 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
   first, and the floor is walked up to the stairs. The stair crouch is a peak hold seeded from the
   rise, so the first steps are covered too. Body jerk (test, previous -> now): walk down 2.7 -> 0.4,
   run down 6.7 -> 1.1, walk up 0.63 -> 0.42, run up 4.3 -> 3.2; feet reach their treads in every case.
+- Standing on stairs while being moved sideways slower than walking (pushed, sliding): the stair
+  stepper only measured along the stairs and placed feet relative to where the stairs were scanned, so
+  both feet stayed behind (18 units after 4 s in the test, a teleport later). Feet now follow with
+  steps, measured and placed relative to the body; moving off the scanned line rescans.
+- Diagnostics: `restep_loop` counted the last steps of a walk after every stop (thousands of false
+  alarms); it now counts only steps started while standing. Serious events (big solver misses,
+  replants, re-step loops, engine mismatches, NaN, errors) keep ~10 s of history before and 2 s after
+  them as `incidents` in `ik_foot_dump`, so a later dump still shows what happened.
 - Cost: the stair scan (41 traces) ran every 0.12 s even standing still or on flat ground. It now
   follows motion and, over smooth ground, only looks as often as it must to find stairs in time, ahead
   of the player only. Hot trace code reuses its vectors. Test: traces per frame walking on flat ground
