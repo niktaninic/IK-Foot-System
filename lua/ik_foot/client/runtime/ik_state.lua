@@ -485,27 +485,40 @@ function State.UpdateStepper(runtimeState, data)
 		local dx, dy = pos.x - ideal.x, pos.y - ideal.y
 		return math.sqrt(dx * dx + dy * dy)
 	end
-	local function Place(side, treadIndex, preferS)
-		local tread = scan.treads[math.Clamp(treadIndex, 1, #scan.treads)]
-		local pos, s = PlacementOnTread(scan, tread, data.lateral[side], data.right, footLen, preferS, bodyAside)
-		-- the traces right under the foot are the truth: the scan only samples
-		-- its centre line, and with the body turned the foot's lateral offset
-		-- and its own length can cross a tread edge (old code: kept the scan's
-		-- height and buried the foot a step deep; a single hull trace: picked
-		-- the upper tread and left the foot hanging over the lower one).
-		-- slide along the stairs until heel, centre and toe share one surface
-		local fallbackZ
+	-- the traces right under the foot are the truth: the scan only samples
+	-- its centre line, and with the body turned the foot's lateral offset
+	-- and its own length can cross a tread edge (old code: kept the scan's
+	-- height and buried the foot a step deep; a single hull trace: picked
+	-- the upper tread and left the foot hanging over the lower one).
+	-- slide along the stairs until heel, centre and toe share one surface
+	-- a tread shorter than the foot plus the sole's width has no such spot:
+	-- then the nearest one whose centre stands on the tread we aimed for
+	-- (it used to take the ground under the first try, which on steep
+	-- stairs could be the edge of the step above: the foot planted a whole
+	-- step in the air)
+	local function OnGround(pos, s)
+		local best, bestErr, bestOff
 		for _, off in ipairs({ 0, 2, -2, 4, -4, 6, -6 }) do
 			local p = pos + scan.dir * (off * data.scale)
 			local z, flat = data.groundAt(p)
-			if z and not fallbackZ then fallbackZ = z end
 			if z and flat then
 				p.z = z
 				return p, s + off * data.scale
 			end
+			if z and (not bestErr or math.abs(z - pos.z) < bestErr - 0.5) then
+				best, bestErr, bestOff = z, math.abs(z - pos.z), off
+			end
 		end
-		if fallbackZ then pos.z = fallbackZ end
+		if best then
+			local p = pos + scan.dir * (bestOff * data.scale)
+			p.z = best
+			return p, s + bestOff * data.scale
+		end
 		return pos, s
+	end
+	local function Place(side, treadIndex, preferS)
+		local tread = scan.treads[math.Clamp(treadIndex, 1, #scan.treads)]
+		return OnGround(PlacementOnTread(scan, tread, data.lateral[side], data.right, footLen, preferS, bodyAside))
 	end
 
 	-- seed plants from where the animation currently has the feet, but never
@@ -608,11 +621,15 @@ function State.UpdateStepper(runtimeState, data)
 			if targetIdx <= #scan.treads then
 				toPos, sTo = Place(trailSide, targetIdx)
 			else
-				-- scan ran out: extrapolate one stride along the slope
+				-- scan ran out: one stride further along the stairs, on whatever
+				-- the traces find there (it used to take the last scanned tread's
+				-- height: going down steep stairs that left the foot a whole step
+				-- in the air)
 				local lastTread = scan.treads[#scan.treads]
 				sTo = sLead + strideAdvance
 				toPos = scan.origin + scan.dir * sTo + data.right * data.lateral[trailSide] + bodyAside
 				toPos.z = lastTread.z
+				toPos, sTo = OnGround(toPos, sTo)
 			end
 			-- the lead foot still stands on the floor (or a landing) and the
 			-- first step is further away than a stride and a half: walk on the

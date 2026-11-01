@@ -62,7 +62,10 @@ for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-
               "SPEED=60; DIR=-1", "SPEED=90; DIR=-1; RISE=10",
               # pushed sideways while standing on the stairs, slower than the
               # standing threshold: the feet follow with steps, never dragged
-              "SPEED=90; STOPAT=1.37; DRIFT=4", "SPEED=90; STOPAT=1.37; DRIFT=-3; DIR=-1"):
+              "SPEED=90; STOPAT=1.37; DRIFT=4", "SPEED=90; STOPAT=1.37; DRIFT=-3; DIR=-1",
+              # steep stairs (tread 14 barely fits a foot): going down, a foot
+              # used to plant on the edge of the step above, a whole step in the air
+              "SPEED=90; RISE=13; TREAD=14", "SPEED=90; RISE=13; TREAD=14; DIR=-1"):
     print("---", setup)
     sys.stdout.flush()
     r = run("test_stairs.lua", setup).globals().RESULT
