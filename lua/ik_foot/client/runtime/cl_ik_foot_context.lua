@@ -23,6 +23,14 @@ for _, entry in ipairs(IKFoot.Config.entries) do
 	RT.CVars[entry.key] = CreateClientConVar(entry.cvar, tostring(default), true, false, entry.desc, entry.min, entry.max)
 end
 
+-- client-only preferences: how this client treats OTHER players. not part of
+-- the synced config, they say nothing about your own character
+RT.ClientCVars = RT.ClientCVars or {}
+RT.ClientCVars.others = CreateClientConVar("ik_foot_others", "1", true, false,
+	"Run the foot IK on other players too (0 = only your own character)", 0, 1)
+RT.ClientCVars.max_distance = CreateClientConVar("ik_foot_max_distance", "3000", true, false,
+	"Other players further away than this keep their plain animation", 300, 10000)
+
 -- one-time migration. older versions stored model-specific values in cvars
 -- (leg length, double-scaled drops etc) that mean something else now
 do

@@ -3,7 +3,6 @@ if not IKFoot or not IKFoot.Runtime then return end
 
 local RT = IKFoot.Runtime
 local RESET_COOLDOWN = 0.5
-local MAX_IK_DISTANCE_SQR = 3000 * 3000
 
 local function Deactivate(ply, bones)
 	-- only reset on the active -> inactive transition instead of every frame
@@ -58,11 +57,21 @@ local function ProcessPlayer(ply)
 		return
 	end
 
+	-- other players: skipped entirely (not even their bone set is built) when
+	-- this client turned that off or they are too far away to see the feet
+	if ply ~= LocalPlayer() then
+		local cv = RT.ClientCVars
+		local maxDist = cv.max_distance:GetFloat()
+		if not cv.others:GetBool() or ply:GetPos():DistToSqr(EyePos()) > maxDist * maxDist then
+			Deactivate(ply)
+			return
+		end
+	end
+
 	local bones = RT.GetIKBones(ply)
 	local params = RT.GetParams(ply)
 
-	if not params.enabled or not bones.valid or not RT.CanManipulateBones(ply)
-		or ply:GetPos():DistToSqr(EyePos()) > MAX_IK_DISTANCE_SQR then
+	if not params.enabled or not bones.valid or not RT.CanManipulateBones(ply) then
 		Deactivate(ply, bones)
 		return
 	end

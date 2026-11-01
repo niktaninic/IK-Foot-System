@@ -358,6 +358,30 @@ check("respawn keeps the known model", ply.IKLastKnownModel ~= nil)
 for _ = 1, 5 do Frame() end
 check("ik back after respawn", ply.IKActive and ply.IKResultFrame == frame)
 
+-- seen from another client: with ik_foot_others 0 this player keeps the plain
+-- animation (our offsets removed), and gets the ik back when it is turned on
+local realLocalPlayer = LocalPlayer
+LocalPlayer = function() return { valid = true } end
+cvars.ik_foot_others = "0"
+Frame()
+check("others off: ik removed from another player", not ply.IKActive and ply.IKResultFrame ~= frame)
+local thighOff = ply.manipAng[IDX[VB .. "R_Thigh"]] or Angle()
+check("others off: no ik rotation left", math.abs(thighOff.p) + math.abs(thighOff.y) + math.abs(thighOff.r) < 0.01 or WITH_PAC,
+  string.format("%.2f %.2f %.2f", thighOff.p, thighOff.y, thighOff.r))
+cvars.ik_foot_others = "1"
+Frame()
+Frame()
+check("others on: ik back on another player", ply.IKActive and ply.IKResultFrame == frame)
+cvars.ik_foot_max_distance = "300"
+ply.pos.x = ply.pos.x + 400
+Frame()
+check("max distance: far player keeps the plain animation", not ply.IKActive)
+cvars.ik_foot_max_distance = "3000"
+ply.pos.x = ply.pos.x - 400
+LocalPlayer = realLocalPlayer
+for _ = 1, 10 do Frame() end
+check("ik back for the local player", ply.IKActive and ply.IKResultFrame == frame)
+
 -- commands: report, dump, capture
 commands["ik_foot_diag"]()
 FILES = {}

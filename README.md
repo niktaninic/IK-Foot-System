@@ -81,6 +81,21 @@ Fixes found in a full review of the per-frame pipeline. "Verified" below means t
   of the player only. Hot trace code reuses its vectors. Test: traces per frame walking on flat ground
   20 -> 14, standing 15 -> 10.5, on stairs 17 -> 13; Vector allocations per frame about -25 %.
 
+## Settings menu
+
+`ik_foot_menu`, `!ikfoot` / `/ikfoot` in chat, or Spawn menu > Utilities > User > IK Foot.
+
+- **Quick setup** - the main switches, the debug overlay level, four style presets (Default, Subtle,
+  Responsive, Grounded; they change tuning values only, never your switches) and a live status.
+- **Ground / Legs & feet / Stairs / Body / Automation** - every setting with a plain-language
+  explanation; hover for the default and the console name. A blue bar marks changed values, the
+  arrow button next to them restores the default.
+- **Search** above the pages finds settings by name, explanation or console name.
+- **Performance** - client-only: `ik_foot_others 0/1` (IK on other players) and
+  `ik_foot_max_distance` (how far away other players still get it, default 3000).
+- **Presets** - save, load and delete your own setups (`data/ik_foot_presets.txt`, same format as before).
+- **Diagnostics** - live status, the overlay, buttons for the report, dump and recordings.
+
 ## Diagnostics
 
 All commands only observe; running them does not change the IK state.

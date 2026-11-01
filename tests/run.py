@@ -38,6 +38,9 @@ g = run("test_bones.lua").globals()
 expect("bones", "detection failures", g.BONES_FAILS == 0, g.BONES_FAILS)
 g = run("test_pac.lua").globals()
 expect("pac", "layer failures", g.PAC_FAILS == 0, g.PAC_FAILS)
+g = run("test_gui.lua").globals()
+expect("gui", "menu failures", g.GUI_FAILS == 0, g.GUI_FAILS)
+expect("gui", "panel methods the mock does not know", g.GUI_UNKNOWN == "", g.GUI_UNKNOWN)
 for setup in ("SPEED=60", "SPEED=90", "SPEED=200", "SPEED=400", "SPEED=90; DIR=-1", "SPEED=200; DIR=-1",
               'SPEED=90; WORLD="flat"', 'SPEED=90; WORLD="curb"', 'SPEED=90; WORLD="ramp"', 'SPEED=90; WORLD="ramp"; DIR=-1',
               'SPEED=90; WORLD="ramp"; STRAFE=true', "SPEED=90; STOPAT=1.37",

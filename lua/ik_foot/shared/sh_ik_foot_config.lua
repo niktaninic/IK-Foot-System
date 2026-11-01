@@ -2,7 +2,7 @@ IKFoot = IKFoot or {}
 
 IKFoot.VERSION = "0.51"
 -- bump with every change that matters for a bug report: dumps record it
-IKFoot.BUILD = "0.51-diag.5"
+IKFoot.BUILD = "0.51-diag.6"
 
 -- bump whenever the meaning of a cvar changes. clients with an older stored
 -- version get the affected cvars reset once (see cl_ik_foot_context.lua)
@@ -43,9 +43,46 @@ IKFoot.Config = {
 	},
 }
 
+-- names and explanations for the settings menu (label, help)
+local TEXT = {
+	enabled = { "Foot IK", "Turns the whole system on or off for your character." },
+	lean_enabled = { "Body lean", "Leans the upper body into turns, acceleration and up stairs." },
+	debug = { "Debug overlay", "Draws feet, targets and ground contacts. Detailed adds traces, the stair profile and followers." },
+	ground_distance = { "Ground search depth", "How far below the trace start the feet look for ground. Longer finds lower ground but can reach through gaps." },
+	smoothing = { "Body smoothing", "How fast the body and feet follow the ground. Higher reacts faster, lower is softer." },
+	leg_length = { "Leg length", "Leg length used to scale everything. 0 measures it from your model (recommended)." },
+	trace_start_offset = { "Trace start height", "Where above your feet the ground search starts. Raise it if feet ignore tall steps." },
+	sole_offset = { "Sole offset", "Extra height between the foot bone and the ground. Raise if feet sink in, lower if they float." },
+	uneven_drop_scale = { "Uneven ground crouch", "How much the body lowers when the feet stand at different heights." },
+	extra_body_drop = { "Knee bend on flat ground", "A little extra bend in the knees while standing on level ground." },
+	extra_body_drop_uneven = { "Knee bend on rough ground", "Extra bend in the knees on uneven ground and stairs." },
+	foot_rotation_scale = { "Foot tilt on slopes", "How much the feet turn to lie flat on a slope. 1 = flat on it, 0 = keep the animation's angle." },
+	lock_strength = { "Foot lock", "How firmly a planted foot stays where it landed." },
+	release_speed = { "Foot release speed", "How fast the animation has to move a planted foot before it is let go." },
+	stair_stepper = { "Stair stepping", "Puts every foot on a real stair tread instead of letting the walk animation float over them." },
+	stair_step_min_height = { "Smallest stair step", "Height differences below this are not treated as stair steps." },
+	stair_step_max_height = { "Tallest stair step", "Height differences above this are ledges, not stair steps." },
+	stair_treads_per_step = { "Stairs per step", "At least this many treads per step. 2 takes stairs two at a time." },
+	stair_max_cadence = { "Max steps per second", "Moving faster than this takes more treads per step; much faster goes back to the animation." },
+	stair_step_lift = { "Step clearance", "How high a stepping foot lifts over the edge of the next tread." },
+	moving_surface_max_speed = { "Moving ground limit", "Ground moving faster than this (lifts, vehicles) is not used for stair steps or foot locks." },
+	rotation_smoothing = { "Foot turn smoothing", "How fast the feet turn to match the ground. Higher reacts faster." },
+	max_body_drop = { "Deepest crouch", "The furthest the body may lower to keep both feet on the ground." },
+	stabilize_idle = { "Steady feet when standing", "Keeps the feet firmly planted while you stand still." },
+	idle_velocity = { "Standing speed", "Below this speed you count as standing still." },
+	auto_model_detect = { "Auto-detect models", "Measures every new player model and applies matching settings." },
+	anti_clip = { "Edge guard", "A foot over an edge rests on top of it instead of sinking in." },
+	dynamic_sole = { "Learn ankle height", "Learns how high the ankle sits on a planted foot, for each model." },
+}
+
 IKFoot.Config.byKey = {}
 for _, entry in ipairs(IKFoot.Config.entries) do
 	IKFoot.Config.byKey[entry.key] = entry
+	local text = TEXT[entry.key]
+	entry.label = text and text[1] or entry.desc
+	entry.help = text and text[2] or ""
+	-- "(ref)": a distance in reference skeleton units, scaled with the leg length
+	entry.scaled = string.find(entry.desc, "(ref)", 1, true) ~= nil
 end
 
 function IKFoot.Config.NWName(key)
