@@ -1,0 +1,71 @@
+[h1]IK Foot System[/h1]
+[i]Feet that actually stand on the ground.[/i]
+
+In vanilla GMod the ground is more of a suggestion. Feet float over stairs, sink into slopes and the walk animation happily skips three steps at a time.
+
+IK Foot System fixes that with real-time inverse kinematics: every foot is placed on what is really under it, the knees bend to reach it and the body follows the terrain. Less levitation, more walking.
+
+[h2]Features[/h2]
+[list]
+[*][b]Real stair walking[/b] - one tread per step, alternating feet, lifting over each edge going up and down. Run fast enough and it takes two at a time, like a person would.
+[*][b]Smooth body on stairs[/b] - no more popping up a whole step at once; the body follows the staircase and crouches only as much as the feet need.
+[*][b]Slopes, curbs and props[/b] - planted feet stay put, turn to lie flat on the surface and don't slide around.
+[*][b]Exact leg IK[/b] - a proper two-bone solver, the foot lands exactly where it should.
+[*][b]Works with your model[/b] - leg bones found automatically (also on non-ValveBiped rigs), every model measured once, shoes and skirts on odd bones follow the feet, hair and helper bones are never touched.
+[*][b]PAC3 compatible[/b] - works on top of PAC parts and other bone-changing addons.
+[*][b]Everyone gets it[/b] - other players get IK with their own settings. Limit it by distance or turn it off for performance.
+[*][b]Edge cases handled[/b] - ledges aren't mistaken for stairs, invisible stair clips are ignored, teleports and respawns reset cleanly.
+[/list]
+
+[h2]Settings menu[/h2]
+Open with [b]ik_foot_menu[/b], [b]!ikfoot[/b] / [b]/ikfoot[/b] in chat, or [b]Spawn menu > Utilities > User > IK Foot[/b].
+
+[list]
+[*][b]Quick setup[/b] - the main switches and four styles: Default, Subtle, Responsive, Grounded.
+[*][b]Ground, Legs & feet, Stairs, Body, Automation[/b] - every option explained in plain words, with a reset button.
+[*][b]Search[/b] - find any setting by name.
+[*][b]Performance[/b] - IK on other players and up to what distance.
+[*][b]Presets[/b] - save and load your own setups.
+[*][b]Diagnostics[/b] - debug overlay and bug report tools.
+[/list]
+
+The defaults are tuned to work out of the box - most people never need to open the menu.
+
+[h2]Installation[/h2]
+Subscribe and play. Works in singleplayer and on servers that have the addon installed (the server relays everyone's settings).
+
+[h2]Commands[/h2]
+[list]
+[*][b]ik_foot 0/1[/b] - turn the system off / on
+[*][b]ik_foot_menu[/b] - settings menu
+[*][b]ik_foot_hard_reset[/b] - clear all IK state and start over
+[*][b]ik_foot_debug 0/1/2[/b] - debug overlay
+[*][b]ik_foot_diag[/b] - short report in the console, with likely causes
+[*][b]ik_foot_dump[/b] - save a full report file for bug reports
+[*][b]ik_foot_capture 10[/b] - record 10 seconds for bug reports
+[/list]
+All settings and their console names are listed on GitHub (link below).
+
+[h2]Something wrong?[/h2]
+[b]Feet float or sink a little[/b] - adjust [i]Sole offset[/i] in the Ground page.
+[b]Feet ignore tall steps[/b] - raise [i]Trace start height[/i] or [i]Ground search depth[/i].
+[b]Jitter while standing[/b] - try the [i]Subtle[/i] style or raise [i]Standing speed[/i].
+[b]Broken after a model change or another addon[/b] - [b]ik_foot_hard_reset[/b]. Still broken? [b]ik_foot 0[/b], switch model and back, [b]ik_foot 1[/b].
+
+[b]Reporting a bug:[/b] run [b]ik_foot_dump[/b] right after it happens and post the file (garrysmod/data/ik_foot/) together with the map and the player model. The dump keeps the seconds before serious problems, so it shows what went wrong even a bit later.
+
+[i]Some maps have broken collisions or cursed geometry. The addon does its best, but it's still the Source engine. If something looks cursed, it probably is.[/i]
+
+[h2]Known limitations[/h2]
+[list]
+[*]Sprinting up very steep, narrow stairs can leave a foot short of its step for a moment.
+[*]In multiplayer the server must have the addon installed; on servers without it, it does nothing.
+[/list]
+
+[h2]Source code[/h2]
+[url=https://github.com/niktaninic/IK-Foot-System]github.com/niktaninic/IK-Foot-System[/url]
+Full changelog, every setting and offline tests are there. Fork it, improve it, send a pull request.
+
+[h2]Credits[/h2]
+Created by [b]nikt_ani_nic[/b]
+Inspired by [url=https://steamcommunity.com/sharedfiles/filedetails/?id=1605334558]this addon[/url].

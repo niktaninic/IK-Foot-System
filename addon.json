@@ -7,6 +7,8 @@
     ],
     "ignore": [
         "README.md",
+        "CHANGELOG.md",
+        "workshop_description.txt",
         ".addon.json.swp",
         "tests/*"
     ]
