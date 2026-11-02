@@ -731,7 +731,7 @@ function Build.presets(scroll)
 	name.placeholder = "Preset name..."
 	StyleEntry(name)
 	local listCard
-	local function Refresh() if IsValid(scroll) and scroll.Rebuild then scroll:Rebuild() end end
+	local function Refresh() if IsValid(scroll) and scroll.ikRefresh then scroll.ikRefresh() end end
 	local save = FlatButton(bar, "Save", C.accent, function()
 		local value = string.Trim(name:GetValue() or "")
 		if value == "" then
@@ -1054,7 +1054,9 @@ local function CreateGUI()
 		end
 		scroll:InvalidateLayout()
 	end
-	scroll.Rebuild = function() Show(current) end
+	-- not "Rebuild": that is DScrollPanel's own method, the one that sizes
+	-- its canvas to the content. replacing it left every page 24 px tall
+	scroll.ikRefresh = function() Show(current) end
 	search.OnValueChange = function() Show(current) end
 
 	for _, page in ipairs(PAGES) do

@@ -445,6 +445,23 @@ check("spawn menu hook", ok, err)
 ok, err = pcall(FORM.builder or function() error("no builder") end, form)
 check("spawn menu panel", ok, err)
 
+-- engine methods the menu must never replace (DScrollPanel.Rebuild sizes
+-- the canvas to its content: overwritten, every page was a 24 px strip)
+local RESERVED = {
+  DScrollPanel = { "Rebuild", "AddItem", "GetCanvas", "OnChildAdded", "Clear", "PerformLayout", "PerformLayoutInternal",
+    "InnerWidth", "ScrollToChild", "OnMouseWheeled", "OnVScroll", "GetVBar" },
+  DFrame = { "Close", "Think", "OnMousePressed", "OnMouseReleased", "PerformLayout" },
+  DTextEntry = { "OnKeyCodeTyped", "OnTextChanged", "GetValue", "SetValue" },
+  DNumSlider = { "SetValue", "GetValue", "ValueChanged", "SetConVar", "Think" },
+}
+local replaced = {}
+for _, p in ipairs(ALL) do
+  for _, name in ipairs(RESERVED[p.class] or {}) do
+    if rawget(p, name) ~= nil then replaced[#replaced + 1] = p.class .. "." .. name end
+  end
+end
+check("engine panel methods left alone", #replaced == 0, table.concat(replaced, ", "))
+
 check("open command", CONCMDS.ik_foot_menu ~= nil)
 check("open net message", NETS.IKFoot_OpenMenu ~= nil)
 
