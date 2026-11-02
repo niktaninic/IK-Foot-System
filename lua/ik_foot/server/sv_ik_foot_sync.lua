@@ -3,7 +3,7 @@ if not IKFoot or not IKFoot.Config then return end
 
 local CONFIG_MESSAGE = "IKFoot_ConfigUpdate"
 local OPEN_MENU_NET = "IKFoot_OpenMenu"
-local CONFIG_PROTOCOL_VERSION = 1
+local CONFIG_PROTOCOL_VERSION = 2
 local CONFIG_UPDATE_INTERVAL = 0.1
 local nextAllowedConfigUpdate = {}
 

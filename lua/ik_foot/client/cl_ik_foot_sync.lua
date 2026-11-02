@@ -3,8 +3,12 @@ if not IKFoot or not IKFoot.Config then return end
 
 local lastConfigSync = 0
 local lastSignature = nil
+local lastSendTime = 0
+-- the server silently drops updates that arrive too fast, so resend now and
+-- then even if nothing changed or the two sides could stay out of sync
+local RESEND_INTERVAL = 5
 local configUpdateMessageName = "IKFoot_ConfigUpdate"
-local configProtocolVersion = 1
+local configProtocolVersion = 2
 
 local function ReadEntryValue(entry)
 	local cvar = GetConVar(entry.cvar)
@@ -46,7 +50,7 @@ hook.Add("Think", "IKFoot_SyncConfigToServer", function()
 	if util.NetworkStringToID(configUpdateMessageName) == 0 then return end
 
 	local payload, signature = BuildSyncPayload()
-	if signature == lastSignature then return end
+	if signature == lastSignature and now - lastSendTime < RESEND_INTERVAL then return end
 
 	net.Start(configUpdateMessageName)
 	net.WriteUInt(configProtocolVersion, 8)
@@ -61,4 +65,5 @@ hook.Add("Think", "IKFoot_SyncConfigToServer", function()
 	net.SendToServer()
 
 	lastSignature = signature
+	lastSendTime = now
 end)
